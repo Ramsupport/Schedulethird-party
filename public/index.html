@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token Management Master System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="/socket.io/socket.io.js"></script>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<!-- ════════════════════════════════════════
+     AUTH SCREEN
+════════════════════════════════════════ -->
+<div id="auth-screen" class="auth-bg">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="auth-brand-icon">⬡</div>
+      <div class="auth-brand-text">
+        <h1>Token Management<br>Master System</h1>
+        <span>Enterprise · v2.0</span>
+      </div>
+    </div>
+    <div class="auth-divider"></div>
+    <h2 class="auth-heading">Welcome back</h2>
+    <p class="auth-sub">Sign in to your workspace</p>
+    <div id="auth-error" class="alert-error"></div>
+    <div class="field-wrap">
+      <label class="field-label">Username</label>
+      <input class="field-input" type="text" id="login-user" placeholder="Enter your username" autocomplete="username">
+    </div>
+    <div class="field-wrap">
+      <label class="field-label">Password</label>
+      <input class="field-input" type="password" id="login-pass" placeholder="Enter your password">
+    </div>
+    <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">
+      Sign In &nbsp;→
+    </button>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     MAIN APP
+════════════════════════════════════════ -->
+<div id="app" style="display:none">
+
+  <!-- NAVBAR -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <div class="nav-brand-icon">⬡</div>
+      <div class="nav-brand-text">
+        <strong>Token Management</strong>
+        <small>Master System</small>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="nav-tab active" onclick="switchPanel('tracker')" id="tab-tracker">
+        🎫 Token Tracker
+      </button>
+      <button class="nav-tab" onclick="switchPanel('discussion')" id="tab-discussion">
+        💬 Discussion
+        <span id="nav-ch-unread" class="unread-pill" style="display:none">0</span>
+      </button>
+      <button class="nav-tab" onclick="switchPanel('messages')" id="tab-messages">
+        ✉️ Messages
+        <span id="nav-dm-unread" class="unread-pill" style="display:none">0</span>
+      </button>
+      <button class="nav-tab" onclick="switchPanel('admin')" id="tab-admin" style="display:none">
+        ⚙️ Admin
+      </button>
+      <button class="nav-tab" onclick="switchPanel('payments')" id="tab-payments">
+        💳 Payments
+      </button>
+      <button class="nav-tab" onclick="switchPanel('settings')" id="tab-settings">
+        🔧 Settings
+      </button>
+      <button class="nav-tab" onclick="switchPanel('about')" id="tab-about">
+        ℹ️ About
+      </button>
+    </div>
+
+    <div class="nav-user">
+      <div>
+        <div id="nav-name" class="nav-name"></div>
+        <div id="nav-role" class="nav-role"></div>
+      </div>
+      <div class="nav-avatar" id="nav-avatar"></div>
+      <button class="btn-logout" onclick="doLogout()">Sign Out</button>
+    </div>
+  </nav>
+
+  <!-- ══════════════════════════════════
+       TOKEN TRACKER PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-tracker" class="panel active">
+    <div class="panel-scroll">
+
+      <!-- KYC banners appear here dynamically -->
+      <div id="kyc-banners"></div>
+
+      <!-- Stat cards -->
+      <div class="stat-grid">
+        <div class="stat-card c-teal">
+          <div class="stat-icon c-teal">🎫</div>
+          <div class="stat-value" id="stat-active">0</div>
+          <div class="stat-label">Active Tokens</div>
+        </div>
+        <div class="stat-card c-gold">
+          <div class="stat-icon c-gold">✅</div>
+          <div class="stat-value" id="stat-completed">0</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-card c-coral">
+          <div class="stat-icon c-coral">💰</div>
+          <div class="stat-value mono" id="stat-due">₹0</div>
+          <div class="stat-label">Total Due</div>
+        </div>
+        <div class="stat-card c-violet">
+          <div class="stat-icon c-violet">📊</div>
+          <div class="stat-value" id="stat-today">0</div>
+          <div class="stat-label">Added Today</div>
+        </div>
+      </div>
+
+      <!-- Add Token -->
+      <div class="card">
+        <div class="card-hd">
+          <div class="card-title"><span class="title-dot"></span>Add New Token</div>
+        </div>
+        <div class="card-bd">
+          <div class="add-token-grid">
+            <div>
+              <label class="field-label">Token &amp; Details</label>
+              <textarea class="token-textarea" id="token-details" placeholder="Paste all token info here..." rows="3"></textarea>
+            </div>
+            <div>
+              <label class="field-label">Charges (₹)</label>
+              <input class="field-input" type="number" id="token-charge" placeholder="0.00" min="0" step="0.01">
+            </div>
+            <button class="btn-add-token" onclick="addToken()">
+              + Add Token
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Total Due -->
+      <div class="due-bar">
+        <div class="due-label">
+          <span>💰</span> Total Due (Completed Tokens)
+        </div>
+        <div class="due-amount" id="total-due">₹0.00</div>
+      </div>
+
+      <!-- Filters -->
+      <div class="filter-bar">
+        <input class="field-input" type="date" id="filter-from" title="From date">
+        <input class="field-input" type="date" id="filter-to" title="To date">
+        <select class="field-input" id="filter-agent" style="display:none;min-width:160px">
+          <option value="">All Agents</option>
+        </select>
+        <input class="field-input filter-search" type="text" id="filter-search" placeholder="🔍  Search tokens..." oninput="loadTokens()">
+        <button class="btn-filter" onclick="loadTokens()">Filter</button>
+        <a href="#" class="btn-csv" onclick="downloadReport(event)">📥 Export CSV</a>
+        <button class="btn-clear" onclick="clearFilters()">✕ Clear</button>
+        <div class="refresh-badge">
+          <div class="pulse-dot"></div>
+          <span id="refresh-timer">30:00</span>
+        </div>
+      </div>
+
+      <!-- Token Table -->
+      <div class="card">
+        <div class="tab-strip">
+          <button class="tab-btn active" onclick="switchTokenTab('active')" id="ttab-active">
+            Active <span class="tab-count" id="count-active">0</span>
+          </button>
+          <button class="tab-btn" onclick="switchTokenTab('completed')" id="ttab-completed">
+            Completed <span class="tab-count muted" id="count-completed">0</span>
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Token ID</th>
+                <th>Submitted By</th>
+                <th>Date (IST)</th>
+                <th>Details</th>
+                <th>Charges</th>
+                <th>KYC Doc</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="token-tbody"></tbody>
+          </table>
+          <div id="token-empty" class="empty-state" style="display:none">
+            <span class="ei">🎫</span>
+            <p>No tokens found for the selected filters.</p>
+          </div>
+          <div id="token-loading" class="empty-state">
+            <span class="ei">⏳</span>
+            <p>Loading tokens…</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       DISCUSSION BOARD PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-discussion" class="panel">
+    <div class="chat-layout">
+
+      <!-- Sidebar -->
+      <div class="chat-sidebar" id="discussion-sidebar">
+        <div class="sidebar-top">
+          <div class="sidebar-top-row">
+            <span style="font-family:'Sora',sans-serif;font-weight:700;font-size:14px;color:var(--text-1)">Channels</span>
+            <button class="sidebar-btn-new" id="new-channel-btn" onclick="openChannelModal()" style="display:none" title="New Channel">+</button>
+          </div>
+        </div>
+        <div class="sidebar-scroll" id="channels-list"></div>
+        <div class="sidebar-footer">
+          <div class="online-label">Team Members</div>
+          <div id="team-members"></div>
+        </div>
+      </div>
+
+      <!-- Chat Main -->
+      <div class="chat-main">
+        <div class="chat-topbar">
+          <button class="mobile-sidebar-btn" onclick="openMobileSidebar('discussion')" title="Channels">☰</button>
+          <div class="chat-topbar-left">
+            <span class="chat-topbar-icon" id="chat-icon">💬</span>
+            <div>
+              <div class="chat-topbar-name" id="chat-name"># general</div>
+              <div class="chat-topbar-desc" id="chat-desc">General team chat</div>
+            </div>
+          </div>
+        </div>
+        <div class="messages-area" id="messages-area">
+          <div class="empty-state"><span class="ei">💬</span><p>Loading messages…</p></div>
+        </div>
+        <div class="chat-input-area">
+          <div class="chat-input-wrap">
+            <textarea class="chat-textarea" id="msg-input" placeholder="Message the team…" onkeydown="handleMsgKey(event)" oninput="autoResizeTA(this)" rows="1"></textarea>
+            <button class="send-btn" onclick="sendMessage()">➤</button>
+          </div>
+          <div class="input-hint">Press Enter to send · Shift+Enter for a new line</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       DIRECT MESSAGES PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-messages" class="panel">
+    <div class="chat-layout">
+
+      <!-- Sidebar -->
+      <div class="chat-sidebar" id="messages-sidebar">
+        <div class="sidebar-top">
+          <div style="font-family:'Sora',sans-serif;font-weight:700;font-size:14px;color:var(--text-1)">Direct Messages</div>
+        </div>
+        <div class="sidebar-scroll" id="dm-list"></div>
+      </div>
+
+      <!-- DM Chat -->
+      <div class="chat-main" id="dm-chat-main">
+        <button class="mobile-sidebar-btn" onclick="openMobileSidebar('messages')" title="Conversations" style="position:absolute;top:10px;left:10px;z-index:10;display:none" id="dm-sidebar-btn">☰</button>
+        <div class="dm-empty">
+          <div class="dm-empty-icon">✉️</div>
+          <p id="dm-pick-msg">Select a conversation to start messaging</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       ADMIN PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-admin" class="panel">
+    <div class="panel-scroll">
+      <div class="admin-grid">
+        <div class="card">
+          <div class="card-hd">
+            <div class="card-title"><span class="title-dot"></span>Agent Management</div>
+            <button class="btn btn-primary" onclick="openUserModal()" style="padding:9px 18px;font-size:13px">+ Add Agent</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Full Name</th><th>Username</th><th>Role</th><th>Action</th></tr></thead>
+              <tbody id="users-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><div class="card-title"><span class="title-dot" style="background:var(--gold);box-shadow:0 0 8px var(--gold)"></span>System Summary</div></div>
+          <div class="card-bd">
+            <div class="admin-stat-grid" id="admin-summary"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       PAYMENTS PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-payments" class="panel">
+    <div class="panel-scroll">
+
+      <div class="settings-page-header">
+        <div>
+          <h1 class="settings-title">💳 Payments</h1>
+          <p class="settings-sub" id="pay-panel-sub">Record and track payment submissions with screenshots</p>
+        </div>
+      </div>
+
+      <!-- Add Payment Form -->
+      <div class="card pay-form-card" id="pay-form-card">
+        <div class="card-hd">
+          <div class="card-title"><span class="title-dot" style="background:var(--teal)"></span>Record New Payment</div>
+        </div>
+        <div class="card-bd">
+          <div class="pay-form-grid">
+
+            <!-- Details -->
+            <div class="pay-field-full">
+              <label class="field-label">Payment Details <span style="color:var(--coral)">*</span></label>
+              <textarea class="field-input pay-details-area" id="pay-details"
+                placeholder="Enter token numbers, location, transaction reference, bank details, or any other relevant information…"
+                rows="5"></textarea>
+            </div>
+
+            <!-- Amount + Date row -->
+            <div class="pay-field-half">
+              <label class="field-label">Amount (₹) <span style="color:var(--coral)">*</span></label>
+              <input class="field-input pay-amount-input" type="number" id="pay-amount"
+                placeholder="0.00" min="0" step="0.01">
+            </div>
+            <div class="pay-field-half">
+              <label class="field-label">Payment Date</label>
+              <input class="field-input" type="date" id="pay-date">
+              <div style="font-size:11px;color:var(--text-3);margin-top:5px">Leave blank to use today's date</div>
+            </div>
+
+            <!-- Screenshot upload -->
+            <div class="pay-field-full">
+              <label class="field-label">Payment Screenshot</label>
+              <div class="pay-drop-zone" id="pay-drop-zone"
+                onclick="document.getElementById('pay-screenshot').click()"
+                ondragover="event.preventDefault();this.classList.add('drag-over')"
+                ondragleave="this.classList.remove('drag-over')"
+                ondrop="handlePayDrop(event)">
+                <div id="pay-drop-content">
+                  <div class="pay-drop-icon">📷</div>
+                  <div class="pay-drop-text">Click to upload or drag &amp; drop screenshot</div>
+                  <div class="pay-drop-sub">JPG, PNG, WEBP up to 10MB</div>
+                </div>
+                <div id="pay-preview-wrap" style="display:none">
+                  <img id="pay-preview-img" class="pay-preview-img" alt="Preview">
+                  <div id="pay-preview-name" class="pay-preview-name"></div>
+                  <button class="pay-remove-btn" onclick="event.stopPropagation();clearPayScreenshot()">✕ Remove</button>
+                </div>
+                <input type="file" id="pay-screenshot" accept="image/*" style="display:none" onchange="handlePayFile(this)">
+              </div>
+            </div>
+
+          </div>
+
+          <div style="margin-top:20px;display:flex;align-items:center;gap:12px">
+            <button class="btn btn-primary pay-submit-btn" id="pay-submit-btn" onclick="submitPayment()">
+              💳 Submit Payment
+            </button>
+            <button class="btn btn-secondary" onclick="clearPayForm()">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Payments List -->
+      <div class="card" style="padding:0;overflow:hidden;margin-top:20px">
+        <div class="card-hd" style="padding:20px 24px 16px;border-bottom:1px solid var(--border)">
+          <div class="card-title"><span class="title-dot" style="background:var(--gold)"></span>Payment History</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="pay-count-badge" class="tab-count" style="background:var(--gold);color:var(--navy)">0</span>
+            <button class="btn btn-secondary" onclick="loadPayments()" style="padding:7px 14px;font-size:12px">↻ Refresh</button>
+          </div>
+        </div>
+        <div id="pay-list">
+          <div class="empty-state"><span class="ei">💳</span><p>No payments recorded yet.</p></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       SETTINGS PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-settings" class="panel">
+    <div class="panel-scroll">
+
+      <div class="settings-page-header">
+        <div>
+          <h1 class="settings-title">Settings</h1>
+          <p class="settings-sub">Manage your account and system preferences</p>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+
+        <!-- LEFT COLUMN -->
+        <div>
+
+          <!-- Change Own Password -->
+          <div class="card">
+            <div class="card-hd">
+              <div class="card-title"><span class="title-dot" style="background:var(--teal)"></span>Change My Password</div>
+            </div>
+            <div class="card-bd">
+              <div class="settings-desc">Update your own login password. You must know your current password to proceed.</div>
+              <div class="field-wrap">
+                <label class="field-label">Current Password</label>
+                <input class="field-input" type="password" id="cp-current" placeholder="Your current password">
+              </div>
+              <div class="field-wrap">
+                <label class="field-label">New Password</label>
+                <input class="field-input" type="password" id="cp-new" placeholder="At least 6 characters">
+              </div>
+              <div class="field-wrap">
+                <label class="field-label">Confirm New Password</label>
+                <input class="field-input" type="password" id="cp-confirm" placeholder="Repeat new password">
+              </div>
+              <button class="btn btn-primary" onclick="changeOwnPassword()" style="margin-top:4px">
+                🔒 Update Password
+              </button>
+            </div>
+          </div>
+
+          <!-- Admin: Reset Any User Password -->
+          <div class="card" id="admin-pwd-card" style="display:none">
+            <div class="card-hd">
+              <div class="card-title"><span class="title-dot" style="background:var(--coral)"></span>Reset Agent Password</div>
+            </div>
+            <div class="card-bd">
+              <div class="settings-desc">As admin, you can reset any agent's password without knowing their current one.</div>
+              <div class="field-wrap">
+                <label class="field-label">Select Agent</label>
+                <select class="field-input" id="reset-user-sel"></select>
+              </div>
+              <div class="field-wrap">
+                <label class="field-label">New Password</label>
+                <input class="field-input" type="password" id="reset-user-pass" placeholder="Set a new password">
+              </div>
+              <button class="btn btn-primary" onclick="resetUserPassword()" style="margin-top:4px;background:var(--grad-coral)">
+                🔑 Reset Password
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div>
+
+          <!-- System Stats -->
+          <div class="card">
+            <div class="card-hd">
+              <div class="card-title"><span class="title-dot" style="background:var(--gold)"></span>System Statistics</div>
+              <button class="btn btn-secondary" onclick="loadSettingsStats()" style="padding:7px 14px;font-size:12px">↻ Refresh</button>
+            </div>
+            <div class="card-bd">
+              <div class="sys-stats-grid" id="sys-stats">
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-tokens">—</div><div class="sys-stat-label">Total Tokens</div></div>
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-active">—</div><div class="sys-stat-label">Active</div></div>
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-completed">—</div><div class="sys-stat-label">Completed</div></div>
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-due" style="color:var(--gold)">—</div><div class="sys-stat-label">Total Due</div></div>
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-users">—</div><div class="sys-stat-label">Team Members</div></div>
+                <div class="sys-stat"><div class="sys-stat-val" id="ss-msgs">—</div><div class="sys-stat-label">Chat Messages</div></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Backup & Restore (admin only) -->
+          <div class="card" id="backup-card" style="display:none">
+            <div class="card-hd">
+              <div class="card-title"><span class="title-dot" style="background:var(--violet)"></span>Backup &amp; Restore</div>
+            </div>
+            <div class="card-bd">
+
+              <!-- Backup -->
+              <div class="backup-section">
+                <div class="backup-section-title">📦 Export Backup</div>
+                <div class="settings-desc">Download a complete JSON backup of all tokens, messages, channels, and users. Store it safely — you can restore from it any time.</div>
+                <button class="btn btn-primary" onclick="downloadBackup()" style="margin-top:12px;background:var(--grad-violet)">
+                  📥 Download Full Backup
+                </button>
+              </div>
+
+              <div class="backup-divider"></div>
+
+              <!-- Restore -->
+              <div class="backup-section">
+                <div class="backup-section-title">🔄 Restore from Backup</div>
+                <div class="settings-desc">Upload a previously downloaded backup file. Choose what data to restore — existing records will be updated, new records will be added.</div>
+
+                <div class="restore-checkboxes">
+                  <label class="check-row"><input type="checkbox" id="restore-tokens" checked> Restore Tokens</label>
+                  <label class="check-row"><input type="checkbox" id="restore-messages" checked> Restore Messages &amp; Channels</label>
+                  <label class="check-row"><input type="checkbox" id="restore-users"> Update User Profiles</label>
+                </div>
+
+                <div class="restore-drop" id="restore-drop" onclick="document.getElementById('restore-file').click()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="handleRestoreDrop(event)">
+                  <div class="restore-drop-icon">📂</div>
+                  <div class="restore-drop-text">Click to choose file or drag &amp; drop</div>
+                  <div class="restore-drop-sub">Accepts .json backup files</div>
+                  <input type="file" id="restore-file" accept=".json" style="display:none" onchange="handleRestoreFile(this)">
+                </div>
+
+                <div id="restore-preview" style="display:none">
+                  <div class="restore-preview-box">
+                    <div class="restore-file-info" id="restore-file-info"></div>
+                    <button class="btn btn-primary" onclick="confirmRestore()" style="background:var(--grad-teal);margin-top:12px;width:100%">
+                      ✅ Restore Now
+                    </button>
+                    <button class="btn btn-secondary" onclick="cancelRestore()" style="margin-top:8px;width:100%">Cancel</button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       ABOUT PANEL
+  ══════════════════════════════════ -->
+  <div id="panel-about" class="panel">
+    <div class="panel-scroll">
+      <div class="about-wrap">
+
+        <!-- Hero -->
+        <div class="about-hero">
+          <div class="about-hero-logo">⬡</div>
+          <div class="about-hero-text">
+            <h1>Token Management<br>Master System</h1>
+            <span class="about-version-badge">Version 2.0 · Enterprise</span>
+          </div>
+        </div>
+
+        <!-- Developer card -->
+        <div class="about-dev-card">
+          <div class="about-dev-left">
+            <div class="about-dev-icon">🏢</div>
+            <div>
+              <div class="about-dev-title">Developed by</div>
+              <div class="about-dev-name">Nithya Informatics</div>
+              <div class="about-dev-sub">Computer Section · Gizmo Hub, Mumbai</div>
+            </div>
+          </div>
+          <div class="about-dev-contact">
+            <div class="about-contact-row">
+              <span class="about-contact-icon">📞</span>
+              <a href="tel:7021956841" class="about-contact-link">7021956841</a>
+            </div>
+            <div class="about-contact-row">
+              <span class="about-contact-icon">📍</span>
+              <span>Mumbai, Maharashtra</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Features grid -->
+        <div class="about-section-title">✨ Features</div>
+        <div class="about-features-grid">
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--teal-glow);color:var(--teal)">🎫</div>
+            <div class="about-feature-title">Token Tracker</div>
+            <div class="about-feature-desc">Add, manage, and track tokens with charges. Filter by date, agent or keyword. Active and Completed tabs with live counts.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--gold-glow);color:var(--gold)">💰</div>
+            <div class="about-feature-title">Financial Dashboard</div>
+            <div class="about-feature-desc">Real-time Total Due calculation on active tokens. Export filtered data to CSV for accounting and record-keeping.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--violet-light);color:var(--violet)">📄</div>
+            <div class="about-feature-title">KYC Document Upload</div>
+            <div class="about-feature-desc">Admin can upload KYC images to Cloudinary after token completion. Agent receives instant notification to view their KYC document.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--teal-glow);color:var(--teal)">💬</div>
+            <div class="about-feature-title">Discussion Board</div>
+            <div class="about-feature-desc">Real-time team chat replacing WhatsApp. Multiple channels, token alert notifications, unread badges, and message history.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--coral-glow);color:var(--coral)">✉️</div>
+            <div class="about-feature-title">Direct Messages</div>
+            <div class="about-feature-desc">Private messaging between Admin and Agents. Agents can only message Admin. Admin can message each agent individually.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:rgba(245,200,66,0.1);color:var(--gold)">🔐</div>
+            <div class="about-feature-title">Role-Based Access</div>
+            <div class="about-feature-desc">Admin and Agent roles with granular permissions. Agents manage their own tokens; Admin oversees all. Secure session-based login.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--teal-glow);color:var(--teal)">⚡</div>
+            <div class="about-feature-title">Real-Time Updates</div>
+            <div class="about-feature-desc">Powered by Socket.IO for instant message delivery, KYC notifications, and live token alerts across all connected users.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--violet-light);color:var(--violet)">📦</div>
+            <div class="about-feature-title">Backup &amp; Restore</div>
+            <div class="about-feature-desc">Full database backup to JSON with one click. Selectively restore tokens, messages, or user data from any previous backup file.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:var(--coral-glow);color:var(--coral)">🔧</div>
+            <div class="about-feature-title">Admin Controls</div>
+            <div class="about-feature-desc">Add/remove agents, reset passwords, view system statistics, manage channels, and maintain complete oversight of all operations.</div>
+          </div>
+
+          <div class="about-feature-card">
+            <div class="about-feature-icon" style="background:rgba(0,212,170,0.08);color:var(--teal)">☁️</div>
+            <div class="about-feature-title">Cloud Ready</div>
+            <div class="about-feature-desc">Deployed on Railway with PostgreSQL. Cloudinary for KYC image storage. Accessible from anywhere on any device.</div>
+          </div>
+
+        </div>
+
+        <!-- Tech stack -->
+        <div class="about-section-title">🛠 Technology Stack</div>
+        <div class="about-tech-grid">
+          <div class="about-tech-pill">Node.js</div>
+          <div class="about-tech-pill">Express.js</div>
+          <div class="about-tech-pill">PostgreSQL</div>
+          <div class="about-tech-pill">Socket.IO</div>
+          <div class="about-tech-pill">Cloudinary</div>
+          <div class="about-tech-pill">Railway</div>
+          <div class="about-tech-pill">bcrypt</div>
+          <div class="about-tech-pill">Sora · JetBrains Mono</div>
+        </div>
+
+        <!-- Footer -->
+        <div class="about-footer">
+          <div>© 2025 Nithya Informatics · Gizmo Hub, Mumbai</div>
+          <div style="margin-top:6px;opacity:0.5">Token Management Master System v2.0 · All rights reserved</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ════════════════════════════════════════
+       MOBILE BOTTOM NAV (hidden on desktop)
+  ════════════════════════════════════════ -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
+    <button class="mbn-tab active" id="mbn-tracker" onclick="switchPanel('tracker')">
+      <span class="mbn-icon">🎫</span>
+      <span class="mbn-label">Tokens</span>
+    </button>
+    <button class="mbn-tab" id="mbn-discussion" onclick="switchPanel('discussion')">
+      <span class="mbn-icon">💬</span>
+      <span class="mbn-label">Chat</span>
+      <span id="mbn-ch-badge" class="mbn-badge" style="display:none">0</span>
+    </button>
+    <button class="mbn-tab" id="mbn-messages" onclick="switchPanel('messages')">
+      <span class="mbn-icon">✉️</span>
+      <span class="mbn-label">DMs</span>
+      <span id="mbn-dm-badge" class="mbn-badge" style="display:none">0</span>
+    </button>
+    <button class="mbn-tab" id="mbn-payments" onclick="switchPanel('payments')">
+      <span class="mbn-icon">💳</span>
+      <span class="mbn-label">Payments</span>
+    </button>
+    <button class="mbn-tab" id="mbn-more" onclick="toggleMobileMenu()">
+      <span class="mbn-icon">⋯</span>
+      <span class="mbn-label">More</span>
+    </button>
+  </nav>
+
+  <!-- Mobile "More" slide-up menu -->
+  <div class="mobile-more-overlay" id="mobile-more-overlay" onclick="closeMobileMenu()"></div>
+  <div class="mobile-more-sheet" id="mobile-more-sheet">
+    <div class="mobile-more-handle"></div>
+    <div class="mobile-more-user">
+      <div class="mobile-more-avatar" id="mobile-more-avatar"></div>
+      <div>
+        <div class="mobile-more-name" id="mobile-more-name"></div>
+        <div class="mobile-more-role" id="mobile-more-role"></div>
+      </div>
+    </div>
+    <div class="mobile-more-items">
+      <button class="mobile-more-item" id="mbn-admin" onclick="closeMobileMenu();switchPanel('admin')" style="display:none">
+        <span>⚙️</span> Admin Panel
+      </button>
+      <button class="mobile-more-item" onclick="closeMobileMenu();switchPanel('settings')">
+        <span>🔧</span> Settings
+      </button>
+      <button class="mobile-more-item" onclick="closeMobileMenu();switchPanel('about')">
+        <span>ℹ️</span> About
+      </button>
+      <button class="mobile-more-item mobile-more-logout" onclick="doLogout()">
+        <span>🚪</span> Sign Out
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile chat sidebar drawer overlay -->
+  <div class="mobile-sidebar-overlay" id="mobile-sidebar-overlay" onclick="closeMobileSidebar()"></div>
+
+</div><!-- /app -->
+
+<!-- ════════════════════════════════════════
+     MODALS
+════════════════════════════════════════ -->
+
+<!-- Edit Token Modal -->
+<div class="modal-overlay" id="edit-token-modal" onclick="closeModalOnBg(event,'edit-token-modal')">
+  <div class="modal">
+    <div class="modal-title">✏️ Edit Token</div>
+    <input type="hidden" id="edit-token-id">
+    <div class="field-wrap">
+      <label class="field-label">Token &amp; Details</label>
+      <textarea class="field-input" id="edit-token-details" rows="6" style="font-family:JetBrains Mono,monospace;font-size:12px;resize:vertical;min-height:120px;line-height:1.6;"></textarea>
+    </div>
+    <div class="field-wrap">
+      <label class="field-label">Charges (₹)</label>
+      <input class="field-input" type="number" id="edit-token-charge" min="0" step="0.01" placeholder="0.00">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('edit-token-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTokenEdit()">💾 Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Channel -->
+<div class="modal-overlay" id="channel-modal" onclick="closeModalOnBg(event,'channel-modal')">
+  <div class="modal">
+    <div class="modal-title">🗂 Create New Channel</div>
+    <div class="field-wrap"><label class="field-label">Channel Name</label><input class="field-input" type="text" id="new-ch-name" placeholder="e.g. announcements"></div>
+    <div class="field-wrap"><label class="field-label">Description</label><input class="field-input" type="text" id="new-ch-desc" placeholder="What is this channel for?"></div>
+    <div class="field-wrap"><label class="field-label">Icon (emoji)</label><input class="field-input" type="text" id="new-ch-icon" value="💬" maxlength="2" style="width:80px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('channel-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createChannel()">Create Channel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Agent -->
+<div class="modal-overlay" id="user-modal" onclick="closeModalOnBg(event,'user-modal')">
+  <div class="modal">
+    <div class="modal-title">👤 Add New Agent</div>
+    <div class="field-wrap"><label class="field-label">Full Name</label><input class="field-input" type="text" id="new-u-name" placeholder="Agent's full name"></div>
+    <div class="field-wrap"><label class="field-label">Username</label><input class="field-input" type="text" id="new-u-username" placeholder="Unique username"></div>
+    <div class="field-wrap"><label class="field-label">Password</label><input class="field-input" type="password" id="new-u-pass" placeholder="Minimum 6 characters"></div>
+    <div class="field-wrap"><label class="field-label">Role</label>
+      <select class="field-input" id="new-u-role">
+        <option value="agent">Agent</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('user-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createUser()">Add Agent</button>
+    </div>
+  </div>
+</div>
+
+<!-- KYC Lightbox -->
+<div class="modal-overlay" id="kyc-lightbox" onclick="closeModal('kyc-lightbox')">
+  <div style="position:relative;max-width:90vw;max-height:90vh">
+    <img id="kyc-lightbox-img" src="" alt="KYC Document" style="max-width:90vw;max-height:85vh;border-radius:var(--r-lg);display:block;border:1px solid var(--border-2)">
+    <button onclick="closeModal('kyc-lightbox')" style="position:absolute;top:-14px;right:-14px;width:32px;height:32px;border-radius:50%;background:var(--s2);border:1px solid var(--border-2);color:var(--text-1);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s" onmouseenter="this.style.background='var(--coral)'" onmouseleave="this.style.background='var(--s2)'">×</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast">
+  <span id="toast-icon" class="toast-icon"></span>
+  <span id="toast-msg"></span>
+</div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
