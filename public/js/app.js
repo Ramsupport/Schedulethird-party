@@ -18,6 +18,11 @@ let socket          = null;
 const SIDEBAR_IDS   = { discussion: 'discussion-sidebar', messages: 'messages-sidebar' };
 let tokenCache      = {}; // id → token object, used by edit modal
 
+// ── PAYMENT ALLOCATION STATE ─────────────────
+// Loaded after login and refreshed after any allocation change.
+// Shape: { [token_id]: { total_paid: number, is_fully_paid: boolean } }
+let tokenPaidStatus = {};
+
 // ── API ─────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: {'Content-Type':'application/json'}, credentials:'include' };
@@ -58,7 +63,6 @@ async function doLogin() {
 
 async function doLogout() {
   await api('POST', '/auth/logout').catch(() => {});
-  // Reset all state
   currentUser     = null;
   currentChannel  = null;
   currentDmUser   = null;
@@ -66,10 +70,10 @@ async function doLogout() {
   allUsers        = [];
   chUnreads       = {};
   dmUnreads       = {};
+  tokenPaidStatus = {};
   if (socket) { socket.disconnect(); socket = null; }
   clearInterval(refreshTimer);
   refreshTimer = null;
-  // Reset nav tabs to default (hide admin, reset active tab)
   document.getElementById('tab-admin').style.display = 'none';
   payScreenshotFile = null;
   const kycBanners = document.getElementById('kyc-banners');
@@ -79,7 +83,6 @@ async function doLogout() {
   document.getElementById('tab-tracker').classList.add('active');
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-tracker').classList.add('active');
-  // Show auth screen
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
   document.getElementById('login-pass').value = '';
@@ -101,43 +104,36 @@ function onLoginSuccess() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
 
-  // Nav user info
   document.getElementById('nav-avatar').textContent = currentUser.name[0].toUpperCase();
   document.getElementById('nav-name').textContent   = currentUser.name;
   document.getElementById('nav-role').textContent   = currentUser.role.toUpperCase();
 
-  // ── Role-based visibility — always set both states explicitly ──
-  // Admin tab: only admin
   document.getElementById('tab-admin').style.display = isAdmin ? 'flex' : 'none';
 
-  // New channel button: only admin
   const newChBtn = document.getElementById('new-channel-btn');
   if (newChBtn) newChBtn.style.display = isAdmin ? 'flex' : 'none';
 
-  // Agent filter in token tracker: only admin
   const filterAgent = document.getElementById('filter-agent');
   if (filterAgent) filterAgent.style.display = isAdmin ? 'block' : 'none';
 
-  // DM pick message
   const dmPickMsg = document.getElementById('dm-pick-msg');
   if (dmPickMsg) dmPickMsg.textContent = isAdmin
     ? 'Select a conversation to start messaging'
     : 'Your conversation with Admin';
 
-  // Ensure tracker panel is active on login
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('panel-tracker').classList.add('active');
   document.getElementById('tab-tracker').classList.add('active');
 
-  // Clear any leftover KYC banners from previous session
   const kycContainer = document.getElementById('kyc-banners');
   if (kycContainer) kycContainer.innerHTML = '';
 
   syncMobileUser();
   initSocket();
   loadUsers().then(() => {
-    loadTokens();
+    // Load paid status alongside tokens so badges show on first render
+    loadTokenPaidStatus().then(() => loadTokens());
     loadChannels().then(() => {
       if (allChannels.length) selectChannel(allChannels[0]);
     });
@@ -157,7 +153,6 @@ function initSocket() {
 
   socket.on('new_message', msg => {
     if (currentChannel && msg.channel_id == currentChannel.id) {
-      // Add author_color from allUsers so avatars render correctly for sender too
       const author = allUsers.find(u => u.id == msg.author_id);
       appendMsg('messages-area', { ...msg, author_color: author?.color || 'var(--teal)' });
       scrollEl('messages-area');
@@ -177,13 +172,10 @@ function initSocket() {
     }
   });
 
-  // New token notification — only admin gets notified, not other agents
   socket.on('new_token', (token) => {
-    // Only admin should receive new token notifications
     if (!currentUser || currentUser.role !== 'admin') return;
     playNotifSound();
     showToast(`🎫 New token ${token.token_ref} added by ${token.author_name}`, 'success');
-    // Refresh token list if on tracker panel
     if (document.getElementById('panel-tracker').classList.contains('active')) {
       loadTokens();
     }
@@ -235,17 +227,14 @@ function switchPanel(name) {
 }
 
 // ── TOKEN TRACKER ────────────────────────────
-
-// Play a soft notification sound using Web Audio API
 function playNotifSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    // Two-tone chime: high then slightly lower
     [[880, 0, 0.12], [660, 0.15, 0.18]].forEach(([freq, start, end]) => {
       const osc  = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain); gain.connect(ctx.destination);
-      osc.type      = 'sine';
+      osc.type = 'sine';
       osc.frequency.value = freq;
       gain.gain.setValueAtTime(0, ctx.currentTime + start);
       gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + start + 0.02);
@@ -253,17 +242,16 @@ function playNotifSound() {
       osc.start(ctx.currentTime + start);
       osc.stop(ctx.currentTime + end + 0.05);
     });
-  } catch(_) {} // silently fail if audio not available
+  } catch(_) {}
 }
 
 async function addToken() {
   const details = document.getElementById('token-details').value.trim();
-  const charge  = parseFloat(document.getElementById('token-charge').value) || 0;
+  const charge  = 0;
   if (!details) { showToast('Please enter token details', 'error'); return; }
   try {
     await api('POST', '/tokens', { details, charge });
     document.getElementById('token-details').value = '';
-    document.getElementById('token-charge').value  = '';
     showToast('Token added successfully!', 'success');
     loadTokens();
   } catch(err) { showToast(err.message, 'error'); }
@@ -281,14 +269,35 @@ async function loadTokens() {
   document.getElementById('token-tbody').innerHTML = '';
   try {
     const p = new URLSearchParams();
-    if (from)  p.set('from', from);
-    if (to)    p.set('to', to);
-    if (agent) p.set('author_id', agent);
+    if (from)   p.set('from', from);
+    if (to)     p.set('to', to);
+    if (agent)  p.set('author_id', agent);
     if (search) p.set('search', search);
     const tokens = await api('GET', '/tokens?' + p);
+    // Refresh paid status silently so badges are always current
+    await loadTokenPaidStatus();
     renderTokenTable(tokens);
   } catch(err) { showToast('Failed to load: ' + err.message, 'error'); }
   finally { document.getElementById('token-loading').style.display = 'none'; }
+}
+
+// ── PAID STATUS ──────────────────────────────
+async function loadTokenPaidStatus() {
+  try {
+    const map = await api('GET', '/payments/token-paid-status');
+    tokenPaidStatus = map || {};
+  } catch(_) { tokenPaidStatus = {}; }
+}
+
+// Returns HTML badge string for a token's charge cell
+function renderTokenBadge(tokenId, charge) {
+  const ps = tokenPaidStatus[tokenId];
+  if (!ps || ps.total_paid <= 0) return '';
+  if (ps.is_fully_paid) {
+    return `<span class="paid-badge">Paid</span>`;
+  }
+  const outstanding = (parseFloat(charge) - ps.total_paid).toFixed(2);
+  return `<span class="partial-paid-badge">₹${outstanding} due</span>`;
 }
 
 function renderTokenTable(tokens) {
@@ -296,36 +305,33 @@ function renderTokenTable(tokens) {
   const completed = tokens.filter(t => t.status === 'completed');
   const display   = currentTokenTab === 'active' ? active : completed;
 
-  // Update stat cards
   document.getElementById('count-active').textContent    = active.length;
   document.getElementById('count-completed').textContent = completed.length;
   document.getElementById('stat-active').textContent     = active.length;
   document.getElementById('stat-completed').textContent  = completed.length;
 
-  // Total Due = sum of COMPLETED tokens only (amount owed after work is done)
-  const totalDue = completed.reduce((s,t) => s + parseFloat(t.charge || 0), 0);
-  document.getElementById('total-due').textContent   = '₹' + totalDue.toFixed(2);
-  document.getElementById('stat-due').textContent    = '₹' + totalDue.toLocaleString('en-IN');
+  // Total Due = completed charges minus what has already been paid
+  const totalDue = completed.reduce((s, t) => {
+    const paid = tokenPaidStatus[t.id]?.total_paid || 0;
+    return s + Math.max(0, parseFloat(t.charge || 0) - paid);
+  }, 0);
 
-  // Today count
   const today = new Date().toDateString();
   const todayCount = tokens.filter(t => new Date(t.created_at).toDateString() === today).length;
   document.getElementById('stat-today').textContent = todayCount;
 
-  const tbody = document.getElementById('token-tbody');
-  const empty = document.getElementById('token-empty');
+  const tbody  = document.getElementById('token-tbody');
+  const empty  = document.getElementById('token-empty');
+  const isAdmin = currentUser.role === 'admin';
 
   if (!display.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
-  const isAdmin = currentUser.role === 'admin';
-
-  // Rebuild cache from current display tokens so edit modal can look up by ID
   display.forEach(t => { tokenCache[t.id] = t; });
 
   tbody.innerHTML = display.map(t => {
     const date    = new Date(t.created_at).toLocaleString('en-IN', { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
-    const isOwn   = currentUser.id == t.author_id;  // == handles int/string mismatch safely
+    const isOwn   = currentUser.id == t.author_id;
     const canEdit = isOwn || isAdmin;
 
     // KYC column
@@ -343,7 +349,6 @@ function renderTokenTable(tokens) {
       kycCell = `<span style="font-size:11px;color:var(--gold)">⏳ Pending</span>`;
     }
 
-    // Only admin can complete/reactivate tokens
     const completeBtn = isAdmin
       ? (t.status === 'active'
         ? `<button class="act-btn act-complete" onclick="updateTokenStatus(${t.id},'completed')">✓ Complete</button>`
@@ -351,12 +356,13 @@ function renderTokenTable(tokens) {
       : '';
     const deleteBtn = canEdit ? `<button class="act-btn act-delete" onclick="deleteToken(${t.id})">🗑</button>` : '';
     const editBtn   = canEdit ? `<button class="act-btn" style="background:rgba(124,92,252,0.12);color:var(--violet);border:1px solid rgba(124,92,252,0.25)" onclick="openEditToken(${t.id})">✏️ Edit</button>` : '';
+
     return `<tr>
       <td class="cell-ref" data-label="Token">${t.token_ref}</td>
       <td class="cell-author" data-label="Agent">${escHtml(t.author_name)}</td>
       <td class="cell-date" data-label="Date">${date}</td>
       <td data-label="Details"><div class="cell-details">${escHtml(t.details)}</div></td>
-      <td class="cell-charge" data-label="Charge">₹${parseFloat(t.charge||0).toFixed(2)}</td>
+      <td class="cell-charge" data-label="Charge">₹${parseFloat(t.charge||0).toFixed(2)}${renderTokenBadge(t.id, t.charge)}</td>
       <td data-label="KYC" style="min-width:110px">${kycCell}</td>
       <td style="white-space:nowrap">${editBtn}${completeBtn}${deleteBtn}</td>
     </tr>`;
@@ -421,8 +427,8 @@ function downloadReport(e) {
   const agEl  = document.getElementById('filter-agent');
   const agent = agEl.style.display !== 'none' ? agEl.value : '';
   const p = new URLSearchParams();
-  if (from) p.set('from', from);
-  if (to)   p.set('to', to);
+  if (from)  p.set('from', from);
+  if (to)    p.set('to', to);
   if (agent) p.set('author_id', agent);
   p.set('status', currentTokenTab);
   window.location = '/api/tokens/export?' + p;
@@ -455,13 +461,9 @@ function openLightbox(url) {
 }
 
 function showKycBanner(data) {
-  // Only show to the agent whose token it belongs to — double-check on frontend too
   if (!currentUser || currentUser.role === 'admin') return;
-
-  // Clear any existing banners first — only show ONE at a time
   const container = document.getElementById('kyc-banners');
   container.innerHTML = '';
-
   const banner = document.createElement('div');
   banner.className = 'kyc-banner';
   banner.innerHTML = `
@@ -539,10 +541,10 @@ function selectChannel(ch) {
   if (typeof ch === 'string') ch = JSON.parse(ch);
   currentChannel = ch;
   chUnreads[ch.id] = 0;
-  document.getElementById('chat-icon').textContent    = ch.icon;
-  document.getElementById('chat-name').textContent    = '# ' + ch.name;
-  document.getElementById('chat-desc').textContent    = ch.description || '';
-  document.getElementById('msg-input').placeholder    = `Message #${ch.name}…`;
+  document.getElementById('chat-icon').textContent = ch.icon;
+  document.getElementById('chat-name').textContent = '# ' + ch.name;
+  document.getElementById('chat-desc').textContent = ch.description || '';
+  document.getElementById('msg-input').placeholder = `Message #${ch.name}…`;
   if (socket) socket.emit('join_channel', ch.id);
   renderChannelList();
   updateNavBadges();
@@ -564,10 +566,8 @@ async function sendMessage() {
   const text  = input.value.trim();
   if (!text || !currentChannel) return;
   input.value = ''; input.style.height = 'auto';
-  try {
-    // Don't appendMsg here — socket 'new_message' handles rendering for everyone including sender
-    await api('POST', `/channels/${currentChannel.id}/messages`, { text });
-  } catch(_) { showToast('Failed to send', 'error'); }
+  try { await api('POST', `/channels/${currentChannel.id}/messages`, { text }); }
+  catch(_) { showToast('Failed to send', 'error'); }
 }
 
 function handleMsgKey(e) { if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();} }
@@ -609,8 +609,7 @@ function openDm(user) {
   currentDmUser = user;
   dmUnreads[user.id] = 0;
   updateNavBadges();
-
-  const main = document.getElementById('dm-chat-main');
+  const main  = document.getElementById('dm-chat-main');
   const color = user.color || 'var(--teal)';
   main.innerHTML = `
     <div class="chat-topbar">
@@ -630,7 +629,6 @@ function openDm(user) {
       </div>
       <div class="input-hint">Enter to send · Shift+Enter for new line</div>
     </div>`;
-
   if (socket) socket.emit('join_dm', buildDmKey(currentUser.id, user.id));
   loadDmMessages(user);
   loadDmConversations();
@@ -651,11 +649,8 @@ async function sendDm() {
   const text = input.value.trim();
   if (!text) return;
   input.value = ''; input.style.height = 'auto';
-  try {
-    // Don't appendMsg here — socket 'dm_message' handles rendering for everyone including sender
-    await api('POST', `/dm/${currentDmUser.id}`, { text });
-    loadDmConversations();
-  } catch(err) { showToast('Failed: ' + err.message, 'error'); }
+  try { await api('POST', `/dm/${currentDmUser.id}`, { text }); loadDmConversations(); }
+  catch(err) { showToast('Failed: ' + err.message, 'error'); }
 }
 
 function handleDmKey(e) { if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendDm();} }
@@ -667,10 +662,10 @@ function renderMsgs(areaId, msgs, isDm) {
   if (!msgs.length) { area.innerHTML = '<div class="empty-state"><span class="ei">💬</span><p>No messages yet. Say hello!</p></div>'; return; }
   let html = '', lastDate = '', lastAuthor = null;
   msgs.forEach(msg => {
-    const d = new Date(msg.created_at);
+    const d  = new Date(msg.created_at);
     const ds = d.toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'});
     if (ds !== lastDate) { html += `<div class="date-divider">${ds}</div>`; lastDate=ds; lastAuthor=null; }
-    html += buildMsgHTML(msg, msg.author_id===lastAuthor);
+    html += buildMsgHTML(msg, msg.author_id===lastAuthor, isDm);
     lastAuthor = msg.author_id;
   });
   area.innerHTML = html;
@@ -695,9 +690,7 @@ function buildMsgHTML(msg, hideAvatar, isDm) {
   const initial = name[0].toUpperCase();
   const isAlert = msg.is_token_alert;
   const msgId   = msg.id;
-  // Show delete button only for channel messages (not DMs), and only to author or admin
   const canDel  = !isDm && currentUser && (currentUser.role === 'admin' || currentUser.id == msg.author_id);
-
   return `<div class="msg-row" data-msg-id="${msgId}">
     <div class="msg-avatar ${hideAvatar?'hidden':''}" style="background:${color}">${initial}</div>
     <div class="msg-body">
@@ -712,8 +705,6 @@ async function deleteChannelMessage(msgId) {
   if (!confirm('Delete this message?')) return;
   try {
     await api('DELETE', '/channels/messages/' + msgId);
-    // Remove from DOM immediately for this user
-    // (socket event will handle other users)
     const el = document.querySelector(`.msg-row[data-msg-id="${msgId}"]`);
     if (el) el.remove();
   } catch(err) { showToast(err.message, 'error'); }
@@ -732,10 +723,10 @@ function updateNavBadges() {
 // ── CHANNEL MODAL ────────────────────────────
 function openChannelModal(){document.getElementById('channel-modal').classList.add('open');}
 async function createChannel(){
-  const name=document.getElementById('new-ch-name').value.trim();
-  const description=document.getElementById('new-ch-desc').value.trim();
-  const icon=document.getElementById('new-ch-icon').value.trim()||'💬';
-  if(!name){showToast('Channel name required','error');return;}
+  const name        = document.getElementById('new-ch-name').value.trim();
+  const description = document.getElementById('new-ch-desc').value.trim();
+  const icon        = document.getElementById('new-ch-icon').value.trim()||'💬';
+  if (!name){showToast('Channel name required','error');return;}
   try{
     const ch=await api('POST','/channels',{name,description,icon});
     allChannels.push(ch);
@@ -783,7 +774,7 @@ async function createUser(){
     await api('POST','/users',{name,username,password,role});
     closeModal('user-modal');
     showToast('Agent added successfully!','success');
-    loadUsers();loadAdminUsers();
+    loadUsers(); loadAdminUsers();
     ['new-u-name','new-u-username','new-u-pass'].forEach(id=>document.getElementById(id).value='');
   }catch(err){showToast(err.message,'error');}
 }
@@ -803,9 +794,9 @@ function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt
 
 function showToast(msg, type='success') {
   const icons = { success:'✅', error:'❌', warn:'⚠️' };
+  const t = document.getElementById('toast');
   document.getElementById('toast-icon').textContent = icons[type] || '✅';
   document.getElementById('toast-msg').textContent  = msg;
-  const t = document.getElementById('toast');
   t.className = 'toast ' + type + ' show';
   clearTimeout(t._to);
   t._to = setTimeout(() => t.classList.remove('show'), 3500);
@@ -816,11 +807,9 @@ checkSession();
 
 // ── SETTINGS ────────────────────────────────
 function initSettings() {
-  // Show admin-only cards
   if (currentUser.role === 'admin') {
     document.getElementById('admin-pwd-card').style.display = 'block';
     document.getElementById('backup-card').style.display = 'block';
-    // Populate user selector
     loadResetUserList();
   }
   loadSettingsStats();
@@ -903,18 +892,15 @@ function handleRestoreDrop(e) {
 function readRestoreFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
-    try {
-      restoreData = JSON.parse(e.target.result);
-      showRestorePreview(file.name, restoreData);
-    } catch(_) { showToast('Invalid JSON file', 'error'); }
+    try { restoreData = JSON.parse(e.target.result); showRestorePreview(file.name, restoreData); }
+    catch(_) { showToast('Invalid JSON file', 'error'); }
   };
   reader.readAsText(file);
 }
 
 function showRestorePreview(filename, data) {
   const d = data.data || {};
-  const info = document.getElementById('restore-file-info');
-  info.innerHTML = `
+  document.getElementById('restore-file-info').innerHTML = `
     <strong>File:</strong> ${escHtml(filename)}<br>
     <strong>Exported:</strong> ${data.exported_at ? new Date(data.exported_at).toLocaleString('en-IN') : 'Unknown'}<br>
     <strong>Version:</strong> ${data.version || '?'}<br>
@@ -944,8 +930,7 @@ async function confirmRestore() {
   try {
     showToast('⏳ Restoring data…', 'success');
     const result = await api('POST', '/settings/restore', {
-      data: restoreData.data,
-      restore_tokens, restore_messages, restore_users,
+      data: restoreData.data, restore_tokens, restore_messages, restore_users,
     });
     cancelRestore();
     loadSettingsStats();
@@ -954,33 +939,24 @@ async function confirmRestore() {
   } catch(err) { showToast('Restore failed: ' + err.message, 'error'); }
 }
 
-// Settings init is called directly from switchPanel above
-
-
 // ══════════════════════════════════════════
 //  PAYMENTS
 // ══════════════════════════════════════════
 
 let payScreenshotFile = null;
 
-// Set today's date as default when panel opens
 function initPayments() {
-  // Admin sees history only — hide the form
   const formCard = document.getElementById('pay-form-card');
   if (formCard) formCard.style.display = currentUser.role === 'admin' ? 'none' : 'block';
 
-  // Update subtitle based on role
   const subEl = document.getElementById('pay-panel-sub');
   if (subEl) subEl.textContent = currentUser.role === 'admin'
-    ? 'View all payment submissions from agents'
+    ? 'View and manage all payment submissions from agents'
     : 'Record and track your payment submissions with screenshots';
 
-  // Set today's date for agents
   if (currentUser.role !== 'admin') {
     const dateEl = document.getElementById('pay-date');
-    if (dateEl && !dateEl.value) {
-      dateEl.value = new Date().toISOString().slice(0, 10);
-    }
+    if (dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
   }
   loadPayments();
 }
@@ -1003,11 +979,11 @@ function setPayScreenshot(file) {
   payScreenshotFile = file;
   const reader = new FileReader();
   reader.onload = (e) => {
-    document.getElementById('pay-drop-content').style.display  = 'none';
-    document.getElementById('pay-preview-wrap').style.display  = 'flex';
+    document.getElementById('pay-drop-content').style.display     = 'none';
+    document.getElementById('pay-preview-wrap').style.display      = 'flex';
     document.getElementById('pay-preview-wrap').style.flexDirection = 'column';
-    document.getElementById('pay-preview-wrap').style.alignItems = 'center';
-    document.getElementById('pay-preview-img').src  = e.target.result;
+    document.getElementById('pay-preview-wrap').style.alignItems   = 'center';
+    document.getElementById('pay-preview-img').src = e.target.result;
     document.getElementById('pay-preview-name').textContent = file.name + ' (' + (file.size/1024).toFixed(0) + ' KB)';
   };
   reader.readAsDataURL(file);
@@ -1034,65 +1010,62 @@ async function submitPayment() {
   const amount  = document.getElementById('pay-amount').value.trim();
   const date    = document.getElementById('pay-date').value;
   const btn     = document.getElementById('pay-submit-btn');
-
   if (!details) { showToast('Please enter payment details', 'error'); return; }
   if (!amount || parseFloat(amount) <= 0) { showToast('Please enter a valid amount', 'error'); return; }
-
-  btn.disabled = true;
-  btn.textContent = '⏳ Submitting…';
-
+  btn.disabled = true; btn.textContent = '⏳ Submitting…';
   try {
     const fd = new FormData();
     fd.append('details', details);
     fd.append('amount',  amount);
     if (date) fd.append('payment_date', date);
     if (payScreenshotFile) fd.append('screenshot', payScreenshotFile);
-
-    const res = await fetch('/api/payments', { method: 'POST', body: fd, credentials: 'include' });
+    const res  = await fetch('/api/payments', { method:'POST', body:fd, credentials:'include' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');
-
     showToast('✅ Payment recorded successfully!', 'success');
     clearPayForm();
     loadPayments();
-  } catch(err) {
-    showToast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '💳 Submit Payment';
-  }
+  } catch(err) { showToast(err.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '💳 Submit Payment'; }
 }
 
-// ── Load & Render ─────────────────────────
+// ── Load ─────────────────────────────────
 async function loadPayments() {
   try {
     const payments = await api('GET', '/payments');
-    renderPayments(payments);
+    // Store full list for search/pagination (set up in index.html inline script)
+    window._allPayments = payments;
+    if (typeof window._paySearchInit === 'function') {
+      window._paySearchInit(payments);
+    } else {
+      // Fallback if inline script not loaded yet
+      _renderPayPage(payments, payments, 1, payments.length);
+    }
   } catch(err) { showToast('Failed to load payments', 'error'); }
 }
 
-function renderPayments(payments) {
+// ── Render page (called by search/pagination engine) ──
+window._renderPayPage = function (pageItems, _allFiltered, currentPage, total) {
   const list  = document.getElementById('pay-list');
   const badge = document.getElementById('pay-count-badge');
-  if (badge) badge.textContent = payments.length;
+  if (badge) badge.textContent = total;
 
-  if (!payments.length) {
-    list.innerHTML = '<div class="empty-state"><span class="ei">💳</span><p>No payments recorded yet.</p></div>';
+  if (!pageItems.length) {
+    list.innerHTML = `<div class="empty-state"><span class="ei">💳</span>
+      <p>${total === 0 ? 'No payments recorded yet.' : 'No payments match your search.'}</p></div>`;
     return;
   }
 
-  list.innerHTML = payments.map(p => {
+  list.innerHTML = pageItems.map(p => {
     const dateStr    = new Date(p.payment_date).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' });
     const createdStr = new Date(p.created_at).toLocaleString('en-IN', { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
     const canDelete  = currentUser.role === 'admin' || currentUser.id == p.submitted_by;
-    const canManage  = currentUser.role === 'admin' || currentUser.id == p.submitted_by;
+    const isAdmin    = currentUser.role === 'admin';
 
-    // Screenshot section:
-    // - Screenshot exists  → show View button for everyone + Remove for agent only
-    // - No screenshot      → agent sees Attach button, admin sees nothing
+    // Screenshot section
     let screenshotHtml = '';
     if (p.screenshot_url) {
-      const isAgent = currentUser.role !== 'admin';
+      const isAgent = !isAdmin;
       screenshotHtml = `
         <div class="pay-ss-section">
           <img class="pay-screenshot-thumb" src="${p.screenshot_url}"
@@ -1103,8 +1076,7 @@ function renderPayments(payments) {
           </button>
           ${isAgent ? `<button class="pay-remove-ss-btn" onclick="removePayScreenshot(${p.id})">✕ Remove</button>` : ''}
         </div>`;
-    } else if (currentUser.role !== 'admin') {
-      // Only agents can attach a screenshot
+    } else if (!isAdmin) {
       screenshotHtml = `
         <div class="pay-ss-section pay-ss-upload">
           <label class="pay-upload-label" title="Attach screenshot">
@@ -1114,7 +1086,28 @@ function renderPayments(payments) {
           </label>
         </div>`;
     }
-    // Admin + no screenshot = show nothing
+
+    // Allocation info + Apply button (admin only)
+    const allocated = parseFloat(p.total_allocated || 0);
+    const amount    = parseFloat(p.amount || 0);
+    let allocHtml   = '';
+
+    if (allocated > 0) {
+      allocHtml += `<div class="pay-alloc-info">
+        <span class="pay-alloc-badge">✓ ₹${allocated.toFixed(2)} allocated</span>`;
+      if (isAdmin) {
+        allocHtml += `<button class="pay-undo-btn" onclick="removePayAllocations(${p.id})" title="Remove all allocations">↩ Undo</button>`;
+      }
+      allocHtml += `</div>`;
+    }
+
+    if (isAdmin && allocated < amount) {
+      const agentName = (p.submitted_name || '').replace(/'/g, "\\'");
+      allocHtml += `<button class="pay-apply-btn" style="margin-top:8px"
+        onclick="openApplyPayModal(${p.id},'${escHtml(p.payment_ref)}',${p.amount},'${agentName}')">
+        💳 Apply to Tokens
+      </button>`;
+    }
 
     return `
     <div class="pay-item" id="pay-item-${p.id}">
@@ -1126,16 +1119,18 @@ function renderPayments(payments) {
           <span>📅 ${dateStr}</span>
           <span>🕐 Submitted ${createdStr} IST</span>
         </div>
+        ${allocHtml}
       </div>
       <div class="pay-item-right">
-        <div class="pay-item-amount">₹${parseFloat(p.amount).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+        <div class="pay-item-amount">₹${amount.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
         ${screenshotHtml}
-        ${canDelete ? `<button class="action-btn btn-delete" onclick="deletePayment(${p.id})" style="font-size:11px;padding:4px 10px">🗑 Delete</button>` : ''}
+        ${canDelete ? `<button class="act-btn act-delete" onclick="deletePayment(${p.id})" style="font-size:11px;padding:4px 10px">🗑 Delete</button>` : ''}
       </div>
     </div>`;
   }).join('');
-}
+};
 
+// ── Screenshot upload/remove ─────────────
 async function uploadPayScreenshot(payId, input) {
   const file = input.files[0];
   if (!file) return;
@@ -1143,7 +1138,7 @@ async function uploadPayScreenshot(payId, input) {
   fd.append('screenshot', file);
   showToast('⏳ Uploading screenshot…', 'success');
   try {
-    const res = await fetch(`/api/payments/${payId}/screenshot`, { method:'POST', body:fd, credentials:'include' });
+    const res  = await fetch(`/api/payments/${payId}/screenshot`, { method:'POST', body:fd, credentials:'include' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Upload failed');
     showToast('✅ Screenshot attached!', 'success');
@@ -1153,18 +1148,24 @@ async function uploadPayScreenshot(payId, input) {
 
 async function removePayScreenshot(payId) {
   if (!confirm('Remove this screenshot?')) return;
-  try {
-    await api('DELETE', `/payments/${payId}/screenshot`);
-    showToast('Screenshot removed', 'success');
-    loadPayments();
-  } catch(err) { showToast(err.message, 'error'); }
+  try { await api('DELETE', `/payments/${payId}/screenshot`); showToast('Screenshot removed', 'success'); loadPayments(); }
+  catch(err) { showToast(err.message, 'error'); }
 }
 
 async function deletePayment(id) {
   if (!confirm('Delete this payment record?')) return;
+  try { await api('DELETE', `/payments/${id}`); showToast('Payment deleted', 'success'); loadPayments(); }
+  catch(err) { showToast(err.message, 'error'); }
+}
+
+// ── Undo allocations (called from payment item + Apply modal) ──
+async function removePayAllocations(payId) {
+  if (!confirm('Remove all payment allocations for this payment? Tokens will show as unpaid again.')) return;
   try {
-    await api('DELETE', `/payments/${id}`);
-    showToast('Payment deleted', 'success');
+    const d = await api('DELETE', `/payments/${payId}/allocations`);
+    showToast(`↩️ Removed ${d.removed} allocation${d.removed !== 1 ? 's' : ''}`, 'success');
+    await loadTokenPaidStatus();
+    loadTokens();
     loadPayments();
   } catch(err) { showToast(err.message, 'error'); }
 }
@@ -1179,17 +1180,153 @@ function openPayLightbox(url) {
 }
 
 // ══════════════════════════════════════════
+//  APPLY PAYMENT MODAL  (admin only)
+//  HTML lives in index.html; logic is here.
+// ══════════════════════════════════════════
+
+let _apmPayId   = null;
+let _apmMethod  = 'date_range';
+let _apmPreview = null;
+
+function openApplyPayModal(payId, payRef, payAmount, agentName) {
+  _apmPayId   = payId;
+  _apmMethod  = 'date_range';
+  _apmPreview = null;
+
+  document.getElementById('apm-summary').innerHTML =
+    `<div class="apm-summary-row">
+       <span class="apm-summary-ref">${payRef}</span>
+       <span class="apm-summary-agent">👤 ${escHtml(agentName || '—')}</span>
+       <span class="apm-summary-amount">₹${parseFloat(payAmount).toFixed(2)}</span>
+     </div>`;
+
+  apmSwitchMethod('date_range');
+  document.getElementById('apm-from').value   = '';
+  document.getElementById('apm-to').value     = '';
+  document.getElementById('apm-amount').value = '';
+  document.getElementById('apm-preview-wrap').style.display = 'none';
+  document.getElementById('apm-confirm-btn').disabled = true;
+
+  document.getElementById('apply-pay-modal').classList.add('open');
+}
+
+function apmSwitchMethod(m) {
+  _apmMethod  = m;
+  _apmPreview = null;
+  document.getElementById('apm-confirm-btn').disabled = true;
+  document.getElementById('apm-preview-wrap').style.display = 'none';
+  document.getElementById('apm-tab-range') .classList.toggle('active', m === 'date_range');
+  document.getElementById('apm-tab-amount').classList.toggle('active', m === 'custom_amount');
+  document.getElementById('apm-range-fields') .style.display = m === 'date_range'    ? 'block' : 'none';
+  document.getElementById('apm-amount-fields').style.display = m === 'custom_amount' ? 'block' : 'none';
+}
+
+async function apmPreview() {
+  const btn = document.getElementById('apm-preview-btn');
+  btn.disabled = true; btn.textContent = '⏳ Loading…';
+
+  const body = { method: _apmMethod };
+  if (_apmMethod === 'date_range') {
+    body.from_date = document.getElementById('apm-from').value;
+    body.to_date   = document.getElementById('apm-to').value;
+    if (!body.from_date || !body.to_date) {
+      showToast('Please select both From and To dates', 'warn');
+      btn.disabled = false; btn.textContent = '👁 Preview Tokens'; return;
+    }
+  } else {
+    body.amount = document.getElementById('apm-amount').value;
+    if (!body.amount || parseFloat(body.amount) <= 0) {
+      showToast('Please enter a valid amount', 'warn');
+      btn.disabled = false; btn.textContent = '👁 Preview Tokens'; return;
+    }
+  }
+
+  try {
+    const res  = await fetch(`/api/payments/${_apmPayId}/apply/preview`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body), credentials:'include',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Preview failed');
+    _apmPreview = { ...data, body };
+    _apmRenderPreview(data);
+    document.getElementById('apm-confirm-btn').disabled = (data.tokens.length === 0);
+  } catch(e) { showToast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '👁 Preview Tokens'; }
+}
+
+function _apmRenderPreview(data) {
+  const wrap  = document.getElementById('apm-preview-wrap');
+  const title = document.getElementById('apm-preview-title');
+  const list  = document.getElementById('apm-token-list');
+  const badge = document.getElementById('apm-remaining-badge');
+
+  wrap.style.display = 'block';
+
+  if (!data.tokens.length) {
+    title.textContent   = 'No unpaid tokens found for this criteria.';
+    badge.style.display = 'none';
+    list.innerHTML      = '<div class="apm-empty">✅ All tokens in this range are already fully paid.</div>';
+    return;
+  }
+
+  title.textContent = `${data.tokens.length} token${data.tokens.length !== 1 ? 's' : ''} · ₹${data.total_allocated.toFixed(2)} will be applied`;
+
+  if (_apmMethod === 'custom_amount' && data.remaining_after > 0) {
+    badge.style.display = 'inline-flex';
+    badge.textContent   = `₹${data.remaining_after.toFixed(2)} unallocated`;
+  } else {
+    badge.style.display = 'none';
+  }
+
+  list.innerHTML = data.tokens.map(t => `
+    <div class="apm-token-row">
+      <div class="apm-token-details">${escHtml((t.details || '').substring(0, 70))}${(t.details||'').length > 70 ? '…' : ''}</div>
+      <div class="apm-token-nums">
+        <span class="apm-token-charge">₹${t.charge.toFixed(2)} charge</span>
+        ${t.already_paid > 0 ? `<span class="apm-token-paid-so-far">₹${t.already_paid.toFixed(2)} paid</span>` : ''}
+        <span class="apm-token-alloc ${t.will_be_fully_paid ? 'apm-full-pay' : 'apm-part-pay'}">
+          ${t.will_be_fully_paid ? '✅' : '⚡'} ₹${t.will_allocate.toFixed(2)} now
+        </span>
+      </div>
+    </div>`).join('');
+}
+
+async function apmConfirm() {
+  if (!_apmPreview?.body) return;
+  const btn = document.getElementById('apm-confirm-btn');
+  btn.disabled = true; btn.textContent = '⏳ Applying…';
+  try {
+    const res  = await fetch(`/api/payments/${_apmPayId}/apply`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_apmPreview.body), credentials:'include',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Apply failed');
+
+    document.getElementById('apply-pay-modal').classList.remove('open');
+    showToast(`✅ Payment applied to ${data.applied_count} token${data.applied_count !== 1 ? 's' : ''}`, 'success');
+
+    // Refresh everything that shows paid data
+    await loadTokenPaidStatus();
+    loadTokens();
+    loadPayments();
+  } catch(e) {
+    showToast(e.message, 'error');
+    btn.disabled = false; btn.textContent = '✅ Apply Payment';
+  }
+}
+
+// ══════════════════════════════════════════
 //  MOBILE NAV
 // ══════════════════════════════════════════
 
 function syncMobileNav(panelName) {
-  // Sync bottom nav active state
   const tabs = ['tracker','discussion','messages','payments'];
   tabs.forEach(t => {
     const el = document.getElementById('mbn-' + t);
     if (el) el.classList.toggle('active', t === panelName);
   });
-  // More tab active if on settings/about/admin
   const moreBtn = document.getElementById('mbn-more');
   if (moreBtn) moreBtn.classList.toggle('active', ['settings','about','admin'].includes(panelName));
 }
@@ -1203,7 +1340,6 @@ function closeMobileMenu() {
   document.getElementById('mobile-more-sheet').classList.remove('open');
 }
 
-
 function openMobileSidebar(panel) {
   const id      = SIDEBAR_IDS[panel];
   const sidebar = document.getElementById(id);
@@ -1216,14 +1352,12 @@ function closeMobileSidebar() {
   if (!overlay) return;
   const panel = overlay.dataset.panel;
   if (panel) {
-    const id      = SIDEBAR_IDS[panel];
-    const sidebar = document.getElementById(id);
+    const sidebar = document.getElementById(SIDEBAR_IDS[panel]);
     if (sidebar) sidebar.classList.remove('open');
   }
   overlay.classList.remove('open');
 }
 
-// Sync mobile more-sheet user info
 function syncMobileUser() {
   if (!currentUser) return;
   const el = document.getElementById('mobile-more-avatar');
@@ -1232,12 +1366,10 @@ function syncMobileUser() {
   if (nm) nm.textContent = currentUser.name;
   const rl = document.getElementById('mobile-more-role');
   if (rl) rl.textContent = currentUser.role.toUpperCase();
-  // Show admin item in more menu
   const adminItem = document.getElementById('mbn-admin');
   if (adminItem) adminItem.style.display = currentUser.role === 'admin' ? 'flex' : 'none';
 }
 
-// Sync mobile badges
 function syncMobileBadges() {
   const chTotal = Object.values(chUnreads).reduce((a,b)=>a+b,0);
   const dmTotal = Object.values(dmUnreads).reduce((a,b)=>a+b,0);
@@ -1246,4 +1378,3 @@ function syncMobileBadges() {
   if (chB) { chB.textContent = chTotal; chB.style.display = chTotal > 0 ? 'flex' : 'none'; }
   if (dmB) { dmB.textContent = dmTotal; dmB.style.display = dmTotal > 0 ? 'flex' : 'none'; }
 }
-
