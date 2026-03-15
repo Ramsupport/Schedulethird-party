@@ -80,9 +80,6 @@
       <button class="nav-tab" onclick="switchPanel('about')" id="tab-about">
         ℹ️ About
       </button>
-      <a class="nav-tab" href="https://challan.ramnathshetty.com" target="_blank" rel="noopener noreferrer">
-        🚔 Challan Tracker
-      </a>
     </div>
 
     <div class="nav-user">
@@ -116,11 +113,6 @@
           <div class="stat-value" id="stat-completed">0</div>
           <div class="stat-label">Completed</div>
         </div>
-        <div class="stat-card c-coral">
-          <div class="stat-icon c-coral">💰</div>
-          <div class="stat-value mono" id="stat-due">₹0</div>
-          <div class="stat-label">Total Due</div>
-        </div>
         <div class="stat-card c-violet">
           <div class="stat-icon c-violet">📊</div>
           <div class="stat-value" id="stat-today">0</div>
@@ -134,28 +126,16 @@
           <div class="card-title"><span class="title-dot"></span>Add New Token</div>
         </div>
         <div class="card-bd">
-          <div class="add-token-grid">
+          <div class="add-token-grid" style="grid-template-columns:1fr auto">
             <div>
               <label class="field-label">Token &amp; Details</label>
               <textarea class="token-textarea" id="token-details" placeholder="Paste all token info here..." rows="3"></textarea>
-            </div>
-            <div>
-              <label class="field-label">Charges (₹)</label>
-              <input class="field-input" type="number" id="token-charge" placeholder="0.00" min="0" step="0.01">
             </div>
             <button class="btn-add-token" onclick="addToken()">
               + Add Token
             </button>
           </div>
         </div>
-      </div>
-
-      <!-- Total Due -->
-      <div class="due-bar">
-        <div class="due-label">
-          <span>💰</span> Total Due (Completed Tokens)
-        </div>
-        <div class="due-amount" id="total-due">₹0.00</div>
       </div>
 
       <!-- Filters -->
@@ -745,9 +725,6 @@
       <button class="mobile-more-item" onclick="closeMobileMenu();switchPanel('about')">
         <span>ℹ️</span> About
       </button>
-      <a class="mobile-more-item" href="https://challan.ramnathshetty.com" target="_blank" rel="noopener noreferrer" onclick="closeMobileMenu()">
-        <span>🚔</span> Challan Tracker
-      </a>
       <button class="mobile-more-item mobile-more-logout" onclick="doLogout()">
         <span>🚪</span> Sign Out
       </button>
@@ -822,6 +799,73 @@
   <div style="position:relative;max-width:90vw;max-height:90vh">
     <img id="kyc-lightbox-img" src="" alt="KYC Document" style="max-width:90vw;max-height:85vh;border-radius:var(--r-lg);display:block;border:1px solid var(--border-2)">
     <button onclick="closeModal('kyc-lightbox')" style="position:absolute;top:-14px;right:-14px;width:32px;height:32px;border-radius:50%;background:var(--s2);border:1px solid var(--border-2);color:var(--text-1);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s" onmouseenter="this.style.background='var(--coral)'" onmouseleave="this.style.background='var(--s2)'">×</button>
+  </div>
+</div>
+
+<!-- Apply Payment Modal (admin only) -->
+<div class="modal-overlay" id="apply-pay-modal" onclick="closeModalOnBg(event,'apply-pay-modal')">
+  <div class="modal" style="width:520px;max-width:96vw">
+    <div class="modal-title">💳 Apply Payment to Tokens</div>
+
+    <!-- Payment summary -->
+    <div class="apm-summary" id="apm-summary"></div>
+
+    <!-- Method tabs -->
+    <div class="apm-method-tabs">
+      <button class="apm-method-tab active" id="apm-tab-range"   onclick="apmSwitchMethod('date_range')">
+        📅 Date Range
+      </button>
+      <button class="apm-method-tab"        id="apm-tab-amount"  onclick="apmSwitchMethod('custom_amount')">
+        💰 Custom Amount
+      </button>
+    </div>
+
+    <!-- Date Range fields -->
+    <div id="apm-range-fields" class="apm-fields">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="field-wrap" style="margin-bottom:0">
+          <label class="field-label">From Date</label>
+          <input class="field-input" type="date" id="apm-from">
+        </div>
+        <div class="field-wrap" style="margin-bottom:0">
+          <label class="field-label">To Date</label>
+          <input class="field-input" type="date" id="apm-to">
+        </div>
+      </div>
+      <p class="apm-hint">All completed tokens for this agent within the date range will be marked paid.</p>
+    </div>
+
+    <!-- Custom Amount fields -->
+    <div id="apm-amount-fields" class="apm-fields" style="display:none">
+      <div class="field-wrap" style="margin-bottom:0">
+        <label class="field-label">Amount to Apply (₹)</label>
+        <input class="field-input" type="number" id="apm-amount" placeholder="0.00" min="0" step="0.01"
+          style="font-family:'JetBrains Mono',monospace;font-size:18px;color:var(--gold)">
+      </div>
+      <p class="apm-hint">Amount will be applied from the <strong>oldest unpaid token first</strong>, filling each charge until the amount runs out.</p>
+    </div>
+
+    <!-- Preview button -->
+    <button class="btn btn-secondary apm-preview-btn" onclick="apmPreview()" id="apm-preview-btn">
+      👁 Preview Tokens
+    </button>
+
+    <!-- Preview results -->
+    <div id="apm-preview-wrap" style="display:none">
+      <div class="apm-preview-header">
+        <span id="apm-preview-title"></span>
+        <span id="apm-remaining-badge" class="apm-remaining" style="display:none"></span>
+      </div>
+      <div class="apm-token-list" id="apm-token-list"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('apply-pay-modal')">Cancel</button>
+      <button class="btn btn-primary" id="apm-confirm-btn" onclick="apmConfirm()" disabled
+        style="background:var(--grad-gold);color:var(--navy)">
+        ✅ Apply Payment
+      </button>
+    </div>
   </div>
 </div>
 
