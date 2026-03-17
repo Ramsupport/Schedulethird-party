@@ -320,8 +320,8 @@ function renderTokenTable(tokens) {
   const todayCount = tokens.filter(t => new Date(t.created_at).toDateString() === today).length;
   document.getElementById('stat-today').textContent = todayCount;
 
-  const tbody  = document.getElementById('token-tbody');
-  const empty  = document.getElementById('token-empty');
+  const tbody   = document.getElementById('token-tbody');
+  const empty   = document.getElementById('token-empty');
   const isAdmin = currentUser.role === 'admin';
 
   if (!display.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
@@ -330,57 +330,58 @@ function renderTokenTable(tokens) {
   display.forEach(t => { tokenCache[t.id] = t; });
 
   tbody.innerHTML = display.map(t => {
-    const date    = new Date(t.created_at).toLocaleString('en-IN', { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    // ── Date: show completed_at for completed tokens, created_at for active ───
+    const isCompleted = t.status === 'completed';
+    const displayDate = isCompleted && t.completed_at ? t.completed_at : t.created_at;
+    const dateLabel   = isCompleted ? 'Completed' : 'Date';
+    const date = new Date(displayDate).toLocaleString('en-IN', {
+      timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'
+    });
+
     const isOwn   = currentUser.id == t.author_id;
     const canEdit = isOwn || isAdmin;
 
     // ── KYC column ──────────────────────────────────────────────────────────
     let kycCell = '';
+    const kycImages = t.kyc_images || [];
+
     if (isAdmin && t.status === 'completed') {
-      // Slot 1
-      const slot1 = t.kyc_image_url
-        ? `<div style="text-align:center">
-             <img src="${t.kyc_image_url}" class="kyc-thumb"
-               onclick="openLightbox('${t.kyc_image_url}')" title="KYC Photo 1">
-             <button class="act-btn act-delete"
-               style="margin-top:3px;font-size:10px;display:block;width:100%"
-               onclick="removeKyc(${t.id},1)">✕ Remove 1</button>
-           </div>`
-        : `<label class="kyc-upload-label" id="kyc-label-${t.id}-1">📎 KYC 1
-             <input type="file" accept="image/*" style="display:none"
-               onchange="uploadKyc(${t.id},this,1)">
-           </label>`;
-      // Slot 2
-      const slot2 = t.kyc_image_url_2
-        ? `<div style="text-align:center">
-             <img src="${t.kyc_image_url_2}" class="kyc-thumb"
-               onclick="openLightbox('${t.kyc_image_url_2}')" title="KYC Photo 2">
-             <button class="act-btn act-delete"
-               style="margin-top:3px;font-size:10px;display:block;width:100%"
-               onclick="removeKyc(${t.id},2)">✕ Remove 2</button>
-           </div>`
-        : `<label class="kyc-upload-label" id="kyc-label-${t.id}-2">📎 KYC 2
-             <input type="file" accept="image/*" style="display:none"
-               onchange="uploadKyc(${t.id},this,2)">
-           </label>`;
-      kycCell = `<div style="display:flex;flex-direction:column;gap:6px;align-items:center">${slot1}${slot2}</div>`;
+      // Render each existing photo with a remove button
+      const existingPhotos = kycImages.map(img => `
+        <div style="text-align:center">
+          <img src="${img.url}" class="kyc-thumb"
+            onclick="openLightbox('${img.url}')" title="KYC Photo">
+          <button class="act-btn act-delete"
+            style="margin-top:3px;font-size:10px;display:block;width:100%"
+            onclick="removeKyc(${t.id},${img.id})">✕ Remove</button>
+        </div>`).join('');
+
+      // Always show an Add Photo button at the bottom
+      const addPhotoBtn = `
+        <label class="kyc-upload-label" id="kyc-add-${t.id}">📎 Add Photo
+          <input type="file" accept="image/*" style="display:none"
+            onchange="uploadKyc(${t.id},this)">
+        </label>`;
+
+      kycCell = `<div style="display:flex;flex-direction:column;gap:6px;align-items:center">
+        ${existingPhotos}${addPhotoBtn}
+      </div>`;
 
     } else if (!isAdmin) {
-      // Agent sees whichever photos have been uploaded
-      const img1 = t.kyc_image_url
-        ? `<img src="${t.kyc_image_url}" class="kyc-thumb"
-             onclick="openLightbox('${t.kyc_image_url}')" title="KYC Document 1">` : '';
-      const img2 = t.kyc_image_url_2
-        ? `<img src="${t.kyc_image_url_2}" class="kyc-thumb"
-             onclick="openLightbox('${t.kyc_image_url_2}')" title="KYC Document 2">` : '';
-      kycCell = (img1 || img2)
+      // Agent sees all uploaded photos + verified badge if any exist
+      const imgs = kycImages.map(img =>
+        `<img src="${img.url}" class="kyc-thumb"
+           onclick="openLightbox('${img.url}')" title="KYC Document">`
+      ).join('');
+      kycCell = imgs
         ? `<div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-             ${img1}${img2}
+             ${imgs}
              <span class="kyc-badge">✅ KYC Verified</span>
            </div>`
         : `<span style="font-size:12px;color:var(--text-3)">—</span>`;
 
     } else {
+      // Admin viewing active tokens
       kycCell = `<span style="font-size:11px;color:var(--gold)">⏳ Pending</span>`;
     }
     // ── end KYC column ───────────────────────────────────────────────────────
@@ -396,7 +397,7 @@ function renderTokenTable(tokens) {
     return `<tr>
       <td class="cell-ref" data-label="Token">${t.token_ref}</td>
       <td class="cell-author" data-label="Agent">${escHtml(t.author_name)}</td>
-      <td class="cell-date" data-label="Date">${date}</td>
+      <td class="cell-date" data-label="${dateLabel}">${date}</td>
       <td data-label="Details"><div class="cell-details">${escHtml(t.details)}</div></td>
       <td class="cell-charge" data-label="Charge">₹${parseFloat(t.charge||0).toFixed(2)}${renderTokenBadge(t.id, t.charge)}</td>
       <td data-label="KYC" style="min-width:130px">${kycCell}</td>
@@ -471,25 +472,28 @@ function downloadReport(e) {
 }
 
 // ── KYC ─────────────────────────────────────
-async function uploadKyc(tokenId, input, slot) {
+// Upload a new KYC photo (no slot — unlimited photos via child table)
+async function uploadKyc(tokenId, input) {
   const file = input.files[0];
   if (!file) return;
-  const label = document.getElementById(`kyc-label-${tokenId}-${slot}`);
+  input.value = ''; // reset so the same file can be re-selected if needed
+  const label = document.getElementById(`kyc-add-${tokenId}`);
   if (label) label.innerHTML = '<span style="font-size:11px;color:var(--text-2)">Uploading…</span>';
   try {
     const fd = new FormData();
     fd.append('kyc_image', file);
-    await apiUpload(`/tokens/${tokenId}/kyc?slot=${slot}`, fd);
+    await apiUpload(`/tokens/${tokenId}/kyc`, fd);
     showToast('🎉 KYC uploaded! Agent notified.', 'success');
     loadTokens();
   } catch(err) { showToast('Upload failed: ' + err.message, 'error'); loadTokens(); }
 }
 
-async function removeKyc(tokenId, slot) {
-  if (!confirm(`Remove KYC photo ${slot}?`)) return;
+// Remove a specific KYC photo by its database row id
+async function removeKyc(tokenId, imageId) {
+  if (!confirm('Remove this KYC photo?')) return;
   try {
-    await api('DELETE', `/tokens/${tokenId}/kyc?slot=${slot}`);
-    showToast('KYC removed');
+    await api('DELETE', `/tokens/${tokenId}/kyc/${imageId}`);
+    showToast('KYC photo removed');
     loadTokens();
   } catch(err) { showToast(err.message, 'error'); }
 }
@@ -1100,29 +1104,28 @@ window._renderPayPage = function (pageItems, _allFiltered, currentPage, total) {
     const canDelete  = currentUser.role === 'admin' || currentUser.id == p.submitted_by;
     const isAdmin    = currentUser.role === 'admin';
 
-    // Screenshot section
-    let screenshotHtml = '';
-    if (p.screenshot_url) {
-      screenshotHtml = `
-        <div class="pay-ss-section">
-          <img class="pay-screenshot-thumb" src="${p.screenshot_url}"
-            alt="Screenshot" onclick="openPayLightbox('${p.screenshot_url}')"
-            title="Click to view full screenshot">
-          <button class="pay-view-btn" onclick="openPayLightbox('${p.screenshot_url}')">
-            🔍 View Screenshot
-          </button>
-          ${canDelete ? `<button class="pay-remove-ss-btn" onclick="removePayScreenshot(${p.id})">✕ Remove</button>` : ''}
-        </div>`;
-    } else if (canDelete) {
-      screenshotHtml = `
-        <div class="pay-ss-section pay-ss-upload">
-          <label class="pay-upload-label" title="Attach screenshot">
-            📎 Attach Screenshot
-            <input type="file" accept="image/*" style="display:none"
-              onchange="uploadPayScreenshot(${p.id}, this)">
-          </label>
-        </div>`;
-    }
+    // ── Screenshots section: dynamic multi-photo ─────────────────────────────
+    const images = p.images || [];
+    const existingScreenshots = images.map(img => `
+      <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px">
+        <img class="pay-screenshot-thumb" src="${img.url}"
+          alt="Screenshot" onclick="openPayLightbox('${img.url}')"
+          title="Click to view full screenshot" style="cursor:pointer">
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <button class="pay-view-btn" onclick="openPayLightbox('${img.url}')">🔍 View</button>
+          ${canDelete ? `<button class="pay-remove-ss-btn" onclick="removePayImage(${p.id},${img.id})">✕ Remove</button>` : ''}
+        </div>
+      </div>`).join('');
+
+    const addPhotoBtn = canDelete ? `
+      <label class="pay-upload-label" title="Add screenshot" style="cursor:pointer">
+        📎 Add Photo
+        <input type="file" accept="image/*" style="display:none"
+          onchange="uploadPayScreenshot(${p.id}, this)">
+      </label>` : '';
+
+    const screenshotHtml = `<div class="pay-ss-section">${existingScreenshots}${addPhotoBtn}</div>`;
+    // ── end screenshots section ───────────────────────────────────────────────
 
     // Allocation info + Apply button (admin only)
     const allocated = parseFloat(p.total_allocated || 0);
@@ -1167,26 +1170,32 @@ window._renderPayPage = function (pageItems, _allFiltered, currentPage, total) {
   }).join('');
 };
 
-// ── Screenshot upload/remove ─────────────
+// ── Screenshot upload / remove ────────────
+// Upload a new screenshot to an existing payment
 async function uploadPayScreenshot(payId, input) {
   const file = input.files[0];
   if (!file) return;
+  input.value = ''; // reset so the same file can be re-selected
   const fd = new FormData();
   fd.append('screenshot', file);
-  showToast('⏳ Uploading screenshot…', 'success');
+  showToast('⏳ Uploading…', 'success');
   try {
-    const res  = await fetch(`/api/payments/${payId}/screenshot`, { method:'POST', body:fd, credentials:'include' });
+    const res  = await fetch(`/api/payments/${payId}/images`, { method:'POST', body:fd, credentials:'include' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Upload failed');
-    showToast('✅ Screenshot attached!', 'success');
+    showToast('✅ Screenshot added!', 'success');
     loadPayments();
   } catch(err) { showToast(err.message, 'error'); }
 }
 
-async function removePayScreenshot(payId) {
+// Remove a specific screenshot by its database row id
+async function removePayImage(payId, imageId) {
   if (!confirm('Remove this screenshot?')) return;
-  try { await api('DELETE', `/payments/${payId}/screenshot`); showToast('Screenshot removed', 'success'); loadPayments(); }
-  catch(err) { showToast(err.message, 'error'); }
+  try {
+    await api('DELETE', `/payments/${payId}/images/${imageId}`);
+    showToast('Screenshot removed', 'success');
+    loadPayments();
+  } catch(err) { showToast(err.message, 'error'); }
 }
 
 async function deletePayment(id) {
@@ -1195,7 +1204,7 @@ async function deletePayment(id) {
   catch(err) { showToast(err.message, 'error'); }
 }
 
-// ── Undo allocations (called from payment item + Apply modal) ──
+// ── Undo allocations ──────────────────────
 async function removePayAllocations(payId) {
   if (!confirm('Remove all payment allocations for this payment? Tokens will show as unpaid again.')) return;
   try {
@@ -1207,7 +1216,7 @@ async function removePayAllocations(payId) {
   } catch(err) { showToast(err.message, 'error'); }
 }
 
-// ── Screenshot lightbox ──────────────────
+// ── Screenshot lightbox ───────────────────
 function openPayLightbox(url) {
   const lb = document.createElement('div');
   lb.className = 'pay-lightbox';
