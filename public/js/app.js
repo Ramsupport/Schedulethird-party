@@ -334,20 +334,56 @@ function renderTokenTable(tokens) {
     const isOwn   = currentUser.id == t.author_id;
     const canEdit = isOwn || isAdmin;
 
-    // KYC column
+    // ── KYC column ──────────────────────────────────────────────────────────
     let kycCell = '';
     if (isAdmin && t.status === 'completed') {
-      kycCell = t.kyc_image_url
-        ? `<img src="${t.kyc_image_url}" class="kyc-thumb" onclick="openLightbox('${t.kyc_image_url}')" title="View KYC Document">
-           <button class="act-btn act-delete" style="margin-top:5px;font-size:10px" onclick="removeKyc(${t.id})">Remove</button>`
-        : `<label class="kyc-upload-label" id="kyc-label-${t.id}">📎 Upload KYC<input type="file" accept="image/*" style="display:none" onchange="uploadKyc(${t.id},this)"></label>`;
+      // Slot 1
+      const slot1 = t.kyc_image_url
+        ? `<div style="text-align:center">
+             <img src="${t.kyc_image_url}" class="kyc-thumb"
+               onclick="openLightbox('${t.kyc_image_url}')" title="KYC Photo 1">
+             <button class="act-btn act-delete"
+               style="margin-top:3px;font-size:10px;display:block;width:100%"
+               onclick="removeKyc(${t.id},1)">✕ Remove 1</button>
+           </div>`
+        : `<label class="kyc-upload-label" id="kyc-label-${t.id}-1">📎 KYC 1
+             <input type="file" accept="image/*" style="display:none"
+               onchange="uploadKyc(${t.id},this,1)">
+           </label>`;
+      // Slot 2
+      const slot2 = t.kyc_image_url_2
+        ? `<div style="text-align:center">
+             <img src="${t.kyc_image_url_2}" class="kyc-thumb"
+               onclick="openLightbox('${t.kyc_image_url_2}')" title="KYC Photo 2">
+             <button class="act-btn act-delete"
+               style="margin-top:3px;font-size:10px;display:block;width:100%"
+               onclick="removeKyc(${t.id},2)">✕ Remove 2</button>
+           </div>`
+        : `<label class="kyc-upload-label" id="kyc-label-${t.id}-2">📎 KYC 2
+             <input type="file" accept="image/*" style="display:none"
+               onchange="uploadKyc(${t.id},this,2)">
+           </label>`;
+      kycCell = `<div style="display:flex;flex-direction:column;gap:6px;align-items:center">${slot1}${slot2}</div>`;
+
     } else if (!isAdmin) {
-      kycCell = t.kyc_image_url
-        ? `<img src="${t.kyc_image_url}" class="kyc-thumb" onclick="openLightbox('${t.kyc_image_url}')" title="View your KYC document"><span class="kyc-badge">✅ KYC Verified</span>`
+      // Agent sees whichever photos have been uploaded
+      const img1 = t.kyc_image_url
+        ? `<img src="${t.kyc_image_url}" class="kyc-thumb"
+             onclick="openLightbox('${t.kyc_image_url}')" title="KYC Document 1">` : '';
+      const img2 = t.kyc_image_url_2
+        ? `<img src="${t.kyc_image_url_2}" class="kyc-thumb"
+             onclick="openLightbox('${t.kyc_image_url_2}')" title="KYC Document 2">` : '';
+      kycCell = (img1 || img2)
+        ? `<div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+             ${img1}${img2}
+             <span class="kyc-badge">✅ KYC Verified</span>
+           </div>`
         : `<span style="font-size:12px;color:var(--text-3)">—</span>`;
+
     } else {
       kycCell = `<span style="font-size:11px;color:var(--gold)">⏳ Pending</span>`;
     }
+    // ── end KYC column ───────────────────────────────────────────────────────
 
     const completeBtn = isAdmin
       ? (t.status === 'active'
@@ -363,7 +399,7 @@ function renderTokenTable(tokens) {
       <td class="cell-date" data-label="Date">${date}</td>
       <td data-label="Details"><div class="cell-details">${escHtml(t.details)}</div></td>
       <td class="cell-charge" data-label="Charge">₹${parseFloat(t.charge||0).toFixed(2)}${renderTokenBadge(t.id, t.charge)}</td>
-      <td data-label="KYC" style="min-width:110px">${kycCell}</td>
+      <td data-label="KYC" style="min-width:130px">${kycCell}</td>
       <td style="white-space:nowrap">${editBtn}${completeBtn}${deleteBtn}</td>
     </tr>`;
   }).join('');
@@ -435,24 +471,27 @@ function downloadReport(e) {
 }
 
 // ── KYC ─────────────────────────────────────
-async function uploadKyc(tokenId, input) {
+async function uploadKyc(tokenId, input, slot) {
   const file = input.files[0];
   if (!file) return;
-  const label = document.getElementById('kyc-label-' + tokenId);
+  const label = document.getElementById(`kyc-label-${tokenId}-${slot}`);
   if (label) label.innerHTML = '<span style="font-size:11px;color:var(--text-2)">Uploading…</span>';
   try {
     const fd = new FormData();
     fd.append('kyc_image', file);
-    await apiUpload(`/tokens/${tokenId}/kyc`, fd);
+    await apiUpload(`/tokens/${tokenId}/kyc?slot=${slot}`, fd);
     showToast('🎉 KYC uploaded! Agent notified.', 'success');
     loadTokens();
   } catch(err) { showToast('Upload failed: ' + err.message, 'error'); loadTokens(); }
 }
 
-async function removeKyc(tokenId) {
-  if (!confirm('Remove this KYC image?')) return;
-  try { await api('DELETE', `/tokens/${tokenId}/kyc`); showToast('KYC removed'); loadTokens(); }
-  catch(err) { showToast(err.message, 'error'); }
+async function removeKyc(tokenId, slot) {
+  if (!confirm(`Remove KYC photo ${slot}?`)) return;
+  try {
+    await api('DELETE', `/tokens/${tokenId}/kyc?slot=${slot}`);
+    showToast('KYC removed');
+    loadTokens();
+  } catch(err) { showToast(err.message, 'error'); }
 }
 
 function openLightbox(url) {
