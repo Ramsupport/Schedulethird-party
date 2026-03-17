@@ -22,25 +22,71 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// ── Helper: fetch a single token with its KYC images array ───────────────────
+async function getTokenWithImages(tokenId) {
+  const { rows } = await pool.query(`
+    SELECT t.*,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id',          k.id,
+            'url',         k.image_url,
+            'public_id',   k.public_id,
+            'uploaded_at', k.uploaded_at,
+            'uploaded_by', k.uploaded_by
+          ) ORDER BY k.uploaded_at ASC
+        ) FILTER (WHERE k.id IS NOT NULL),
+        '[]'::json
+      ) AS kyc_images
+    FROM tokens t
+    LEFT JOIN token_kyc_images k ON k.token_id = t.id
+    WHERE t.id = $1
+    GROUP BY t.id
+  `, [tokenId]);
+  return rows[0] || null;
+}
+
 // GET /api/tokens
 router.get('/', requireAuth, async (req, res) => {
   const { from, to, author_id, search, status } = req.query;
   const user = req.session.user;
-  let query  = 'SELECT * FROM tokens WHERE 1=1';
   const params = [];
   let i = 1;
+  let where = '1=1';
 
   // Agents only see their own tokens
   if (user.role !== 'admin') {
-    query += ` AND author_id=$${i++}`; params.push(user.id);
+    where += ` AND t.author_id=$${i++}`; params.push(user.id);
   } else if (author_id) {
-    query += ` AND author_id=$${i++}`; params.push(author_id);
+    where += ` AND t.author_id=$${i++}`; params.push(author_id);
   }
-  if (from)   { query += ` AND created_at >= $${i++}`; params.push(from); }
-  if (to)     { query += ` AND created_at <= $${i++}`; params.push(to + 'T23:59:59Z'); }
-  if (search) { query += ` AND (details ILIKE $${i++} OR token_ref ILIKE $${i++})`; params.push(`%${search}%`, `%${search}%`); i++; }
-  if (status) { query += ` AND status=$${i++}`; params.push(status); }
-  query += ' ORDER BY created_at DESC';
+  if (from)   { where += ` AND t.created_at >= $${i++}`; params.push(from); }
+  if (to)     { where += ` AND t.created_at <= $${i++}`; params.push(to + 'T23:59:59Z'); }
+  if (search) { where += ` AND (t.details ILIKE $${i++} OR t.token_ref ILIKE $${i++})`; params.push(`%${search}%`, `%${search}%`); }
+  if (status) { where += ` AND t.status=$${i++}`; params.push(status); }
+
+  // Completed tokens sort by completed_at DESC; active tokens sort by created_at DESC
+  const query = `
+    SELECT t.*,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id',          k.id,
+            'url',         k.image_url,
+            'public_id',   k.public_id,
+            'uploaded_at', k.uploaded_at,
+            'uploaded_by', k.uploaded_by
+          ) ORDER BY k.uploaded_at ASC
+        ) FILTER (WHERE k.id IS NOT NULL),
+        '[]'::json
+      ) AS kyc_images
+    FROM tokens t
+    LEFT JOIN token_kyc_images k ON k.token_id = t.id
+    WHERE ${where}
+    GROUP BY t.id
+    ORDER BY
+      CASE WHEN t.status = 'completed' THEN t.completed_at ELSE t.created_at END DESC NULLS LAST
+  `;
 
   try {
     const { rows } = await pool.query(query, params);
@@ -65,7 +111,7 @@ router.post('/', requireAuth, async (req, res) => {
     );
     const token = rows[0];
 
-    // Notify only admin — get admin user IDs and emit to their rooms only
+    // Notify admin(s) via Socket.IO
     const io = req.app.get('io');
     if (io) {
       try {
@@ -86,7 +132,6 @@ router.post('/', requireAuth, async (req, res) => {
           [ch.rows[0].id, user.id, user.name,
            `🎫 New token ${ref} added by ${user.name}\n${details}\nCharge: ₹${parseFloat(charge||0).toFixed(2)}`]
         );
-        const io = req.app.get('io');
         if (io) io.to(`channel_${ch.rows[0].id}`).emit('new_message', msg.rows[0]);
       }
     } catch(_) {}
@@ -139,34 +184,31 @@ router.delete('/:id', requireAuth, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Token not found' });
     if (user.role !== 'admin' && rows[0].author_id !== user.id)
       return res.status(403).json({ error: 'Not allowed' });
-    // Destroy both KYC slots from Cloudinary before deleting the token
+
+    // Destroy all KYC images from Cloudinary (child table)
+    const kycs = await pool.query('SELECT public_id FROM token_kyc_images WHERE token_id=$1', [req.params.id]);
+    for (const kyc of kycs.rows) {
+      if (kyc.public_id) await cloudinary.uploader.destroy(kyc.public_id).catch(() => {});
+    }
+    // Also clean up legacy single-slot columns if still populated
     if (rows[0].kyc_public_id)   await cloudinary.uploader.destroy(rows[0].kyc_public_id).catch(() => {});
     if (rows[0].kyc_public_id_2) await cloudinary.uploader.destroy(rows[0].kyc_public_id_2).catch(() => {});
+
+    // Cascade in DB handles deleting token_kyc_images rows automatically
     await pool.query('DELETE FROM tokens WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/tokens/:id/kyc?slot=1|2  (admin only)
+// POST /api/tokens/:id/kyc  (admin only) — add a KYC photo
 router.post('/:id/kyc', requireAdmin, upload.single('kyc_image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-
-  const slot   = req.query.slot === '2' ? 2 : 1;
-  const urlCol = slot === 2 ? 'kyc_image_url_2'   : 'kyc_image_url';
-  const pidCol = slot === 2 ? 'kyc_public_id_2'   : 'kyc_public_id';
-  const atCol  = slot === 2 ? 'kyc_uploaded_at_2' : 'kyc_uploaded_at';
-  const byCol  = slot === 2 ? 'kyc_uploaded_by_2' : 'kyc_uploaded_by';
-
   try {
-    const { rows } = await pool.query('SELECT * FROM tokens WHERE id=$1', [req.params.id]);
+    const { rows } = await pool.query('SELECT id, token_ref, author_id FROM tokens WHERE id=$1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Token not found' });
+    const token = rows[0];
 
-    // Remove old image for this slot if one already exists
-    if (rows[0][pidCol]) {
-      await cloudinary.uploader.destroy(rows[0][pidCol]).catch(() => {});
-    }
-
-    // Upload new image to Cloudinary via stream
+    // Upload to Cloudinary
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         { folder: 'token-tracker/kyc', resource_type: 'image' },
@@ -175,44 +217,41 @@ router.post('/:id/kyc', requireAdmin, upload.single('kyc_image'), async (req, re
       stream.end(req.file.buffer);
     });
 
-    const updated = await pool.query(
-      `UPDATE tokens SET ${urlCol}=$1, ${pidCol}=$2, ${atCol}=NOW(), ${byCol}=$3
-       WHERE id=$4 RETURNING *`,
-      [result.secure_url, result.public_id, req.session.user.name, req.params.id]
+    // Insert into child table
+    await pool.query(
+      `INSERT INTO token_kyc_images (token_id, image_url, public_id, uploaded_at, uploaded_by)
+       VALUES ($1, $2, $3, NOW(), $4)`,
+      [req.params.id, result.secure_url, result.public_id, req.session.user.name]
     );
-    const token = updated.rows[0];
 
-    // Notify agent via Socket.IO — pass whichever URL was just uploaded
+    // Notify agent via Socket.IO
     const io = req.app.get('io');
     if (io && token.author_id) {
       io.to(`user_${token.author_id}`).emit('kyc_uploaded', {
         token_ref:     token.token_ref,
-        kyc_image_url: slot === 1 ? token.kyc_image_url : token.kyc_image_url_2,
-        slot,
+        kyc_image_url: result.secure_url,
       });
     }
-    res.json(token);
+
+    // Return updated token with full kyc_images array
+    const updated = await getTokenWithImages(req.params.id);
+    res.json(updated);
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE /api/tokens/:id/kyc?slot=1|2  (admin only)
-router.delete('/:id/kyc', requireAdmin, async (req, res) => {
-  const slot   = req.query.slot === '2' ? 2 : 1;
-  const urlCol = slot === 2 ? 'kyc_image_url_2'   : 'kyc_image_url';
-  const pidCol = slot === 2 ? 'kyc_public_id_2'   : 'kyc_public_id';
-  const atCol  = slot === 2 ? 'kyc_uploaded_at_2' : 'kyc_uploaded_at';
-  const byCol  = slot === 2 ? 'kyc_uploaded_by_2' : 'kyc_uploaded_by';
-
+// DELETE /api/tokens/:id/kyc/:imageId  (admin only) — remove one KYC photo by its row id
+router.delete('/:id/kyc/:imageId', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(`SELECT ${pidCol} FROM tokens WHERE id=$1`, [req.params.id]);
-    if (!rows.length) return res.status(404).json({ error: 'Token not found' });
-    if (rows[0][pidCol]) {
-      await cloudinary.uploader.destroy(rows[0][pidCol]).catch(() => {});
-    }
-    await pool.query(
-      `UPDATE tokens SET ${urlCol}=NULL, ${pidCol}=NULL, ${atCol}=NULL, ${byCol}=NULL WHERE id=$1`,
-      [req.params.id]
+    const { rows } = await pool.query(
+      'SELECT * FROM token_kyc_images WHERE id=$1 AND token_id=$2',
+      [req.params.imageId, req.params.id]
     );
+    if (!rows.length) return res.status(404).json({ error: 'KYC image not found' });
+
+    if (rows[0].public_id) {
+      await cloudinary.uploader.destroy(rows[0].public_id).catch(() => {});
+    }
+    await pool.query('DELETE FROM token_kyc_images WHERE id=$1', [req.params.imageId]);
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
@@ -232,10 +271,13 @@ router.get('/export', requireAuth, async (req, res) => {
   query += ' ORDER BY created_at DESC';
   try {
     const { rows } = await pool.query(query, params);
-    let csv = 'Token ID,Submitted By,Date (IST),Details,Charges,Status\n';
+    let csv = 'Token ID,Submitted By,Date (IST),Completed At (IST),Details,Charges,Status\n';
     rows.forEach(t => {
-      const d = new Date(t.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      csv += `"${t.token_ref}","${t.author_name}","${d}","${(t.details||'').replace(/"/g,'""')}","₹${parseFloat(t.charge||0).toFixed(2)}","${t.status}"\n`;
+      const d  = new Date(t.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const ca = t.completed_at
+        ? new Date(t.completed_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+        : '';
+      csv += `"${t.token_ref}","${t.author_name}","${d}","${ca}","${(t.details||'').replace(/"/g,'""')}","₹${parseFloat(t.charge||0).toFixed(2)}","${t.status}"\n`;
     });
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="tokens-${new Date().toISOString().slice(0,10)}.csv"`);
