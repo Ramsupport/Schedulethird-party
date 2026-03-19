@@ -190,12 +190,22 @@
           <div id="token-loading" class="empty-state">
             <span class="ei">⏳</span>
             <p>Loading tokens…</p>
-          </div>
+         </div>
         </div>
+
+        <!-- Token Pagination -->
+        <div class="token-pagination" id="token-pagination" style="display:none">
+          <button class="pay-page-btn" id="token-prev-btn" onclick="changeTokenPage(-1)" disabled>← Prev</button>
+          <div class="pay-page-numbers" id="token-page-numbers"></div>
+          <button class="pay-page-btn" id="token-next-btn" onclick="changeTokenPage(1)">Next →</button>
+        </div>
+
       </div>
 
     </div>
   </div>
+
+  <!-- ══════ DISCUSSION BOARD PANEL
 
   <!-- ══════════════════════════════════
        DISCUSSION BOARD PANEL
