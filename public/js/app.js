@@ -3,6 +3,24 @@
    Frontend JS: API · Socket.IO · UI Logic
 ════════════════════════════════════════════ */
 
+// ── THEME ────────────────────────────────────
+(function () {
+  if (localStorage.getItem('theme') === 'light') {
+    document.body.classList.add('light-mode');
+    document.addEventListener('DOMContentLoaded', function () {
+      var btn = document.getElementById('theme-toggle');
+      if (btn) btn.textContent = '🌙';
+    });
+  }
+})();
+
+function toggleTheme() {
+  var isLight = document.body.classList.toggle('light-mode');
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = isLight ? '🌙' : '☀️';
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+}
+
 // ── STATE ───────────────────────────────────
 let currentUser     = null;
 let currentTokenTab = 'active';
@@ -17,6 +35,14 @@ let refreshTimer    = null;
 let socket          = null;
 const SIDEBAR_IDS   = { discussion: 'discussion-sidebar', messages: 'messages-sidebar' };
 let tokenCache      = {}; // id → token object, used by edit modal
+
+// ── TOKEN PAGINATION STATE ───────────────────
+// Mirrors the payment pagination pattern.
+// _tokenAllDisplay  : full active-or-completed list for the current tab/filters
+// _tokenCurrentPage : 1-based page pointer, reset on every fresh load or tab switch
+let _tokenAllDisplay  = [];
+let _tokenCurrentPage = 1;
+const TOKEN_PAGE_SIZE = 20;
 
 // ── PAYMENT ALLOCATION STATE ─────────────────
 // Loaded after login and refreshed after any allocation change.
@@ -258,6 +284,7 @@ async function addToken() {
 }
 
 async function loadTokens() {
+  _tokenCurrentPage = 1;   // reset to first page on every fresh fetch
   const from   = document.getElementById('filter-from').value;
   const to     = document.getElementById('filter-to').value;
   const agEl   = document.getElementById('filter-agent');
@@ -276,6 +303,7 @@ async function loadTokens() {
     const tokens = await api('GET', '/tokens?' + p);
     // Refresh paid status silently so badges are always current
     await loadTokenPaidStatus();
+    window._lastTokens = tokens;   // cache for pagination re-renders
     renderTokenTable(tokens);
   } catch(err) { showToast('Failed to load: ' + err.message, 'error'); }
   finally { document.getElementById('token-loading').style.display = 'none'; }
@@ -324,12 +352,25 @@ function renderTokenTable(tokens) {
   const empty   = document.getElementById('token-empty');
   const isAdmin = currentUser.role === 'admin';
 
-  if (!display.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
+  if (!display.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    _tokenAllDisplay = [];
+    _updateTokenPagination(0, 1);
+    return;
+  }
   empty.style.display = 'none';
 
-  display.forEach(t => { tokenCache[t.id] = t; });
+  // Store full display list for pagination, then slice to current page
+  _tokenAllDisplay = display;
+  const totalPages = Math.max(1, Math.ceil(display.length / TOKEN_PAGE_SIZE));
+  _tokenCurrentPage = Math.min(_tokenCurrentPage, totalPages);
+  const start     = (_tokenCurrentPage - 1) * TOKEN_PAGE_SIZE;
+  const pageItems = display.slice(start, start + TOKEN_PAGE_SIZE);
 
-  tbody.innerHTML = display.map(t => {
+  pageItems.forEach(t => { tokenCache[t.id] = t; });
+
+  tbody.innerHTML = pageItems.map(t => {
     // ── Date: show completed_at for completed tokens, created_at for active ───
     const isCompleted = t.status === 'completed';
     const displayDate = isCompleted && t.completed_at ? t.completed_at : t.created_at;
@@ -404,10 +445,69 @@ function renderTokenTable(tokens) {
       <td style="white-space:nowrap">${editBtn}${completeBtn}${deleteBtn}</td>
     </tr>`;
   }).join('');
+
+  _updateTokenPagination(display.length, totalPages);
+}
+
+// ── TOKEN PAGINATION HELPERS ─────────────────
+function _updateTokenPagination(total, totalPages) {
+  const pag     = document.getElementById('token-pagination');
+  const prevBtn = document.getElementById('token-prev-btn');
+  const nextBtn = document.getElementById('token-next-btn');
+  const numWrap = document.getElementById('token-page-numbers');
+  if (!pag) return;
+
+  pag.style.display = totalPages <= 1 ? 'none' : 'flex';
+  if (totalPages <= 1) return;
+
+  prevBtn.disabled = _tokenCurrentPage === 1;
+  nextBtn.disabled = _tokenCurrentPage === totalPages;
+
+  numWrap.innerHTML = '';
+  _tokenPageRange(_tokenCurrentPage, totalPages).forEach(p => {
+    if (p === '…') {
+      const el = document.createElement('span');
+      el.className = 'pay-page-ellipsis';
+      el.textContent = '…';
+      numWrap.appendChild(el);
+    } else {
+      const btn = document.createElement('button');
+      btn.className = 'pay-page-num' + (p === _tokenCurrentPage ? ' active' : '');
+      btn.textContent = p;
+      btn.onclick = () => { _tokenCurrentPage = p; renderTokenTable(window._lastTokens || []); };
+      numWrap.appendChild(btn);
+    }
+  });
+
+  // Results info line
+  let info = pag.querySelector('.pay-results-info');
+  if (!info) {
+    info = document.createElement('div');
+    info.className = 'pay-results-info';
+    pag.appendChild(info);
+  }
+  const s = (_tokenCurrentPage - 1) * TOKEN_PAGE_SIZE + 1;
+  const e = Math.min(_tokenCurrentPage * TOKEN_PAGE_SIZE, total);
+  info.textContent = `Showing ${s}–${e} of ${total} token${total !== 1 ? 's' : ''}`;
+}
+
+function _tokenPageRange(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  if (cur <= 4)          return [1, 2, 3, 4, 5, '…', total];
+  if (cur >= total - 3)  return [1, '…', total-4, total-3, total-2, total-1, total];
+  return [1, '…', cur-1, cur, cur+1, '…', total];
+}
+
+// Global handler called by the Prev/Next buttons in HTML
+function changeTokenPage(delta) {
+  const totalPages = Math.max(1, Math.ceil(_tokenAllDisplay.length / TOKEN_PAGE_SIZE));
+  _tokenCurrentPage = Math.min(Math.max(1, _tokenCurrentPage + delta), totalPages);
+  renderTokenTable(window._lastTokens || []);
 }
 
 function switchTokenTab(tab) {
-  currentTokenTab = tab;
+  currentTokenTab   = tab;
+  _tokenCurrentPage = 1;   // reset to page 1 whenever the tab changes
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('ttab-' + tab).classList.add('active');
   loadTokens();
